@@ -1,5 +1,7 @@
 import { authService } from './auth';
 import { sha256Hex } from './chunkHash';
+import { createSequentialTaskGate } from './chunkHashGate';
+import { ensureOkResponse, throwIfUnauthorized, UNAUTHORIZED_MESSAGE } from './apiResponseContract';
 
 import { API_BASE } from './config';
 import { classifyBatchDeleteResponse, type BatchDeleteResult } from './batchDeleteContract';
@@ -299,8 +301,7 @@ class FileAPI {
                 credentials: 'include',
                 headers: getHeaders(),
             }).then(async response => {
-                if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
-                if (!response.ok) throw new Error('获取上传能力失败');
+                await ensureOkResponse(response, '获取上传能力失败', { errorPayload: 'none' });
                 return response.json();
             }).catch(error => {
                 this.uploadCapabilitiesPromise = null;
@@ -323,8 +324,7 @@ class FileAPI {
             headers: getHeaders(),
             signal: options.signal,
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error('获取文件列表失败');
+        await ensureOkResponse(response, '获取文件列表失败', { errorPayload: 'none' });
         return response.json();
     }
 
@@ -340,8 +340,7 @@ class FileAPI {
             headers: getHeaders(),
             signal: options.signal,
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error('获取文件夹统计失败');
+        await ensureOkResponse(response, '获取文件夹统计失败', { errorPayload: 'none' });
         const payload = await response.json();
         return payload.folders;
     }
@@ -358,8 +357,7 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error('获取文件信息失败');
+        await ensureOkResponse(response, '获取文件信息失败', { authStatuses: [401], errorPayload: 'none' });
         return response.json();
     }
 
@@ -368,7 +366,7 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
+        throwIfUnauthorized(response);
         const payload = await response.json().catch(() => ({}));
         return {
             available: response.ok && payload.available !== false,
@@ -396,8 +394,7 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error('获取未完成上传失败');
+        await ensureOkResponse(response, '获取未完成上传失败', { errorPayload: 'none' });
         const payload = await response.json();
         return payload.sessions || [];
     }
@@ -429,7 +426,7 @@ class FileAPI {
             method: 'DELETE',
             headers: getHeaders(),
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
+        throwIfUnauthorized(response);
         const payload = await response.json().catch(() => ({}));
         if (response.status === 409 && payload.status === 'busy') return 'busy';
         if (response.status === 404) return 'not_found';
@@ -447,11 +444,7 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const payload = await response.json().catch(() => ({}));
-            throw new Error(payload.error || '获取任务列表失败');
-        }
+        await ensureOkResponse(response, '获取任务列表失败');
         return response.json();
     }
 
@@ -463,7 +456,7 @@ class FileAPI {
                 method: 'POST',
                 headers: getHeaders(),
             });
-            if (confirmation.status === 401 || confirmation.status === 428) throw new Error('UNAUTHORIZED');
+            throwIfUnauthorized(confirmation);
             const payload = await confirmation.json().catch(() => ({}));
             if (!confirmation.ok || !payload.confirmationToken) {
                 throw new Error(payload.error || '无法创建任务取消确认');
@@ -478,7 +471,7 @@ class FileAPI {
                 ...(confirmationToken ? { 'X-Confirmation-Token': confirmationToken } : {}),
             }),
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
+        throwIfUnauthorized(response);
         if (!response.ok) {
             const payload = await response.json().catch(() => ({}));
             throw new Error(payload.message || payload.error || '任务操作失败');
@@ -496,7 +489,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(input),
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
+        throwIfUnauthorized(response);
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload.error || '无法创建任务删除预览');
         return payload;
@@ -512,7 +505,7 @@ class FileAPI {
             }),
             body: JSON.stringify({ snapshotId: preview.snapshotId, context: preview.context }),
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
+        throwIfUnauthorized(response);
         const payload = await response.json().catch(() => ({}));
         if (!response.ok && response.status !== 207) throw new Error(payload.error || '删除任务记录失败');
         return payload;
@@ -545,7 +538,7 @@ class FileAPI {
 
             xhr.addEventListener('load', () => {
                 if (xhr.status === 401) {
-                    reject(new Error('UNAUTHORIZED'));
+                    reject(new Error(UNAUTHORIZED_MESSAGE));
                 } else if (xhr.status >= 200 && xhr.status < 300) {
                     try {
                         resolve(JSON.parse(xhr.responseText));
@@ -625,11 +618,7 @@ class FileAPI {
                 }),
                 signal,
             });
-            if (initResponse.status === 401 || initResponse.status === 428) throw new Error('UNAUTHORIZED');
-            if (!initResponse.ok) {
-                const payload = await initResponse.json().catch(() => ({}));
-                throw new Error(payload.error || '初始化分块上传失败');
-            }
+            await ensureOkResponse(initResponse, '初始化分块上传失败');
             const initPayload = await initResponse.json();
             ({ uploadId, maxChunkBytes, totalChunks } = parseChunkUploadInit(initPayload, file.size));
             uploadedChunks = new Set();
@@ -657,11 +646,13 @@ class FileAPI {
 
         try {
             // 并发上传尚未完成的分块；任一失败会中止并等待所有在途请求结束。
+            // hash 需要整块读入内存，串行计算把峰值压到单个分块大小。
+            const hashChunk = createSequentialTaskGate();
             const uploadOneChunk = async (chunkIndex: number, workerSignal: AbortSignal) => {
                 if (uploadedChunks.has(chunkIndex)) return;
                 const { start, end } = chunkBounds(file.size, chunkIndex, maxChunkBytes);
                 const chunk = file.slice(start, end);
-                const chunkHash = await sha256Hex(chunk);
+                const chunkHash = await hashChunk(() => sha256Hex(chunk));
                 if (workerSignal.aborted) throw workerSignal.reason;
 
                 const chunkResponse = await fetch(`${API_BASE}/api/chunked/chunk`, {
@@ -678,11 +669,7 @@ class FileAPI {
                     signal: workerSignal,
                 });
 
-                if (chunkResponse.status === 401 || chunkResponse.status === 428) throw new Error('UNAUTHORIZED');
-                if (!chunkResponse.ok) {
-                    const payload = await chunkResponse.json().catch(() => ({}));
-                    throw new Error(payload.error || `上传分块 ${chunkIndex + 1}/${totalChunks} 失败`);
-                }
+                await ensureOkResponse(chunkResponse, `上传分块 ${chunkIndex + 1}/${totalChunks} 失败`);
                 const chunkResult = await chunkResponse.json().catch(() => ({}));
                 const serverReceivedBytes = Number(chunkResult.receivedBytes || 0);
                 progressState = advanceChunkUploadProgress(
@@ -715,11 +702,7 @@ class FileAPI {
                 signal,
             });
 
-            if (completeResponse.status === 401 || completeResponse.status === 428) throw new Error('UNAUTHORIZED');
-            if (!completeResponse.ok) {
-                const payload = await completeResponse.json().catch(() => ({}));
-                throw new Error(payload.error || '完成分块上传失败');
-            }
+            await ensureOkResponse(completeResponse, '完成分块上传失败');
 
             return completeResponse.json();
         } catch (error) {
@@ -760,14 +743,14 @@ class FileAPI {
         const confirmationResponse = await fetch(`${API_BASE}/api/files/${id}/delete-confirmation`, {
             credentials: 'include', method: 'POST', headers: getHeaders(),
         });
-        if (!confirmationResponse.ok) throw new Error((await confirmationResponse.json().catch(() => ({}))).error || '无法创建删除确认');
+        await ensureOkResponse(confirmationResponse, '无法创建删除确认', { authStatuses: [] });
         const { confirmationToken } = await confirmationResponse.json();
         const response = await fetch(`${API_BASE}/api/files/${id}`, {
             credentials: 'include',
             method: 'DELETE',
             headers: getHeaders({ 'X-Confirmation-Token': confirmationToken }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
+        throwIfUnauthorized(response, [401]);
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload.error || payload.details || '删除文件失败');
         return payload;
@@ -780,11 +763,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ fileIds, folderNames }),
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.error || '获取删除影响范围失败');
-        }
+        await ensureOkResponse(response, '获取删除影响范围失败');
         return response.json();
     }
 
@@ -796,7 +775,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ confirmationToken }),
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
+        throwIfUnauthorized(response);
         return classifyBatchDeleteResponse(response);
     }
 
@@ -809,11 +788,7 @@ class FileAPI {
             body: JSON.stringify({ password, expiration }),
         });
 
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || '创建分享链接失败');
-        }
+        await ensureOkResponse(response, '创建分享链接失败', { authStatuses: [401], errorPayload: 'strict' });
         return response.json();
     }
 
@@ -823,8 +798,7 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error('获取下载链接失败');
+        await ensureOkResponse(response, '获取下载链接失败', { authStatuses: [401], errorPayload: 'none' });
 
         const data = await response.json();
         if (data.isRelative) {
@@ -859,8 +833,7 @@ class FileAPI {
         const response = await fetch(`${API_BASE}/api/storage/config/advanced-tasks`, {
             credentials: 'include', headers: getHeaders(),
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '获取高级任务设置失败');
+        await ensureOkResponse(response, '获取高级任务设置失败');
         return response.json();
     }
 
@@ -883,8 +856,7 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error('获取存储统计失败');
+        await ensureOkResponse(response, '获取存储统计失败', { authStatuses: [401], errorPayload: 'none' });
         return response.json();
     }
 
@@ -894,8 +866,7 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error('获取存储配置失败');
+        await ensureOkResponse(response, '获取存储配置失败', { authStatuses: [401], errorPayload: 'none' });
         return response.json();
     }
 
@@ -906,11 +877,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ enabled }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.error || '更新 Telegram 用户下载设置失败');
-        }
+        await ensureOkResponse(response, '更新 Telegram 用户下载设置失败', { authStatuses: [401] });
         return response.json();
     }
 
@@ -921,11 +888,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ userIds }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.error || '更新 Telegram 允许用户列表失败');
-        }
+        await ensureOkResponse(response, '更新 Telegram 允许用户列表失败', { authStatuses: [401] });
         return response.json();
     }
 
@@ -936,11 +899,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ retentionDays }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.error || '清理下载任务明细失败');
-        }
+        await ensureOkResponse(response, '清理下载任务明细失败', { authStatuses: [401] });
         return response.json();
     }
 
@@ -952,8 +911,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ clientId, clientSecret, refreshToken, tenantId, name }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error('更新配置失败');
+        await ensureOkResponse(response, '更新配置失败', { authStatuses: [401], errorPayload: 'none' });
         return response.json();
     }
 
@@ -965,11 +923,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ name, region, accessKeyId, accessKeySecret, bucket }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || '添加 Aliyun OSS 账户失败');
-        }
+        await ensureOkResponse(response, '添加 Aliyun OSS 账户失败', { authStatuses: [401], errorPayload: 'strict' });
         return response.json();
     }
 
@@ -981,11 +935,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ name, endpoint, region, accessKeyId, accessKeySecret, bucket, forcePathStyle }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || '添加 S3 账户失败');
-        }
+        await ensureOkResponse(response, '添加 S3 账户失败', { authStatuses: [401], errorPayload: 'strict' });
         return response.json();
     }
 
@@ -997,11 +947,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ name, url, username, password }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || '添加 WebDAV 账户失败');
-        }
+        await ensureOkResponse(response, '添加 WebDAV 账户失败', { authStatuses: [401], errorPayload: 'strict' });
         return response.json();
     }
 
@@ -1013,11 +959,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ provider, accountId }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || '切换存储失败');
-        }
+        await ensureOkResponse(response, '切换存储失败', { authStatuses: [401], errorPayload: 'strict' });
         return response.json();
     }
 
@@ -1027,23 +969,7 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error('获取账户列表失败');
-        return response.json();
-    }
-
-    // 从当前活跃的 S3 存储桶导入未入库文件
-    async importFromBucket(): Promise<{ success: boolean; scanned: number; imported: number; skipped: number; excluded: number }> {
-        const response = await fetch(`${API_BASE}/api/storage/import-from-bucket`, {
-            credentials: 'include',
-            method: 'POST',
-            headers: getHeaders(),
-        });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.error || '从存储桶导入失败');
-        }
+        await ensureOkResponse(response, '获取账户列表失败', { authStatuses: [401], errorPayload: 'none' });
         return response.json();
     }
 
@@ -1053,11 +979,7 @@ class FileAPI {
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.error || '存储账户连接测试失败');
-        }
+        await ensureOkResponse(response, '存储账户连接测试失败');
         return response.json();
     }
 
@@ -1066,7 +988,7 @@ class FileAPI {
         const response = await fetch(`${API_BASE}/api/storage/accounts/${accountId}/delete-confirmation`, {
             credentials: 'include', method: 'POST', headers: getHeaders(),
         });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '无法创建删除确认');
+        await ensureOkResponse(response, '无法创建删除确认', { authStatuses: [] });
         return response.json();
     }
 
@@ -1076,11 +998,7 @@ class FileAPI {
             method: 'DELETE',
             headers: getHeaders({ 'X-Confirmation-Token': confirmationToken }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || '删除账户失败');
-        }
+        await ensureOkResponse(response, '删除账户失败', { authStatuses: [401], errorPayload: 'strict' });
         return response.json();
     }
 
@@ -1095,10 +1013,7 @@ class FileAPI {
             body: JSON.stringify({ folderName }),
         });
 
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || '创建文件夹失败');
-        }
+        await ensureOkResponse(response, '创建文件夹失败', { authStatuses: [], errorPayload: 'strict' });
 
         return response.json();
     }
@@ -1111,11 +1026,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ name }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || '重命名失败');
-        }
+        await ensureOkResponse(response, '重命名失败', { authStatuses: [401], errorPayload: 'strict' });
         return response.json();
     }
 
@@ -1127,11 +1038,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ oldName, newName }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || '重命名文件夹失败');
-        }
+        await ensureOkResponse(response, '重命名文件夹失败', { authStatuses: [401], errorPayload: 'strict' });
         return response.json();
     }
 
@@ -1143,11 +1050,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ folder }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || '移动失败');
-        }
+        await ensureOkResponse(response, '移动失败', { authStatuses: [401], errorPayload: 'strict' });
         return response.json();
     }
 
@@ -1159,11 +1062,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ oldName, newName }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || '移动文件夹失败');
-        }
+        await ensureOkResponse(response, '移动文件夹失败', { authStatuses: [401], errorPayload: 'strict' });
         return response.json();
     }
 
@@ -1175,7 +1074,7 @@ class FileAPI {
             body: JSON.stringify({ oldName, newName }),
             signal,
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
+        throwIfUnauthorized(response);
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload.error || '获取移动影响范围失败');
         return payload;
@@ -1193,8 +1092,7 @@ class FileAPI {
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error('切换收藏状态失败');
+        await ensureOkResponse(response, '切换收藏状态失败', { authStatuses: [401], errorPayload: 'none' });
         return response.json();
     }
 
@@ -1206,8 +1104,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ folderName }),
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error('切换文件夹收藏状态失败');
+        await ensureOkResponse(response, '切换文件夹收藏状态失败', { authStatuses: [401], errorPayload: 'none' });
         return response.json();
     }
 
@@ -1225,11 +1122,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ clientId, tenantId, clientSecret, name }),
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || '获取授权地址失败');
-        }
+        await ensureOkResponse(response, '获取授权地址失败', { errorPayload: 'strict' });
         return response.json();
     }
 
@@ -1240,11 +1133,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ clientId, clientSecret, name, sharedDriveId }),
         });
-        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || '获取授权地址失败');
-        }
+        await ensureOkResponse(response, '获取授权地址失败', { errorPayload: 'strict' });
         return response.json();
     }
 }
