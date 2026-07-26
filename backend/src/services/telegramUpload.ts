@@ -41,7 +41,7 @@ import { resolveTelegramGeneratedFileName } from '../utils/telegramNaming.js';
 import { annotateTelegramMediaGroup, createTelegramMediaGroupDebouncer, getForwardedSourceLookup, prefetchForwardedSourceMessages, takePendingMediaGroupSnapshot, telegramMediaGroupQueueKey, type ForwardedSourceMessageCache } from '../utils/telegramMediaGroup.js';
 import { resolveTelegramStorageFolderPersistent, resolveTelegramTaskStorageFolderPersistent, previewTelegramStorageFolderPersistent } from '../utils/telegramPathSettings.js';
 import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
-import { DownloadTaskQueue, type DownloadTaskGroupInput, type DownloadTaskGroupSnapshot } from './downloadTaskQueue.js';
+import { DownloadTaskQueue, type DownloadTaskExecutionResult, type DownloadTaskGroupInput, type DownloadTaskGroupSnapshot } from './downloadTaskQueue.js';
 import { persistOrdinaryTransferTask } from './transferTasks.js';
 import { saveAndIndexWithCompensation, compensateIndexedWriteAfterCancel } from './storageWrite.js';
 import { acquireStorageAccountOperationLease, withStorageAccountOperationLease } from './storageAccountOperation.js';
@@ -1549,33 +1549,29 @@ export async function waitForChannelExecutionPermission(
     }
 }
 
-export async function waitForStorageCooldownRetry(
-    initialRetryAt: Date,
-    signal: AbortSignal,
-    retry: () => Promise<Date | undefined>,
-    onWaiting?: (retryAt: Date) => Promise<void> | void,
+export function scheduleStorageCooldownRequeue(
+    queue: Pick<DownloadTaskQueue, 'pauseGroup' | 'resumeGroup' | 'add'>,
+    input: {
+        groupId: string;
+        fileName: string;
+        execute: (signal: AbortSignal, taskId?: string) => Promise<void | DownloadTaskExecutionResult>;
+        totalSize?: number;
+        onPendingCancelled?: () => void | Promise<void>;
+        cooldownUntil: Date;
+    },
     now: () => number = Date.now,
-): Promise<'success' | 'cancelled'> {
-    let retryAt: Date | undefined = initialRetryAt;
-    while (retryAt && !signal.aborted) {
-        await onWaiting?.(retryAt);
-        while (!signal.aborted && now() < retryAt.getTime()) {
-            await new Promise<void>(resolve => {
-                const onAbort = () => {
-                    clearTimeout(timer);
-                    resolve();
-                };
-                const timer = setTimeout(() => {
-                    signal.removeEventListener('abort', onAbort);
-                    resolve();
-                }, Math.min(30_000, Math.max(1000, retryAt!.getTime() - now())));
-                signal.addEventListener('abort', onAbort, { once: true });
-            });
-        }
-        if (signal.aborted) return 'cancelled';
-        retryAt = await retry();
-    }
-    return signal.aborted ? 'cancelled' : 'success';
+    setTimer: (handler: () => void, ms: number) => { unref?: () => void } = (handler, ms) => setTimeout(handler, ms),
+): void {
+    queue.pauseGroup(input.groupId, {}, true);
+    void queue.add(input.groupId, input.fileName, input.execute, input.totalSize || 0, input.onPendingCancelled).catch(err => {
+        console.error(`🤖 存储冷却任务重新入队异常: ${input.fileName}`, err);
+    });
+    const scheduleResume = (delayMs: number) => {
+        setTimer(() => {
+            if (queue.resumeGroup(input.groupId, {}, true).status === 'blocked') scheduleResume(30_000);
+        }, Math.max(0, Math.min(delayMs, 2_147_483_647))).unref?.();
+    };
+    scheduleResume(input.cooldownUntil.getTime() - now());
 }
 
 // 处理单个文件上传（带重试机制）
@@ -2938,24 +2934,23 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 success = await attemptSingleUpload(signal, reportQueueProgress);
             }
 
-            if (storageCooldownUntil) {
+            if (storageCooldownUntil && !signal.aborted) {
+                const cooldownRetryAt = storageCooldownUntil;
+                storageCooldownUntil = undefined;
+                lastError = undefined;
                 updateUploadPhase(chatIdStr, uploadId, { phase: 'queued' });
-                const retryResult = await waitForStorageCooldownRetry(
-                    storageCooldownUntil,
-                    signal,
-                    async () => {
-                        storageCooldownUntil = undefined;
-                        lastError = undefined;
-                        success = await attemptSingleUpload(signal, reportQueueProgress);
-                        return storageCooldownUntil;
-                    },
-                    async (retryAt) => {
-                        if (statusMsg && !silentSessionMap.has(chatIdStr)) {
-                            await safeEditMessage(client, chatId, { message: statusMsg.id, text: lastError || formatStorageCooldownNotice(retryAt) });
-                        }
-                    },
-                );
-                if (retryResult === 'cancelled') return { status: 'success' as const };
+                scheduleStorageCooldownRequeue(downloadQueue, {
+                    groupId: singleGroupId,
+                    fileName: finalFileName,
+                    execute: singleUploadTask,
+                    totalSize,
+                    onPendingCancelled: onSinglePendingCancelled,
+                    cooldownUntil: cooldownRetryAt,
+                });
+                if (statusMsg && !silentSessionMap.has(chatIdStr)) {
+                    await safeEditMessage(client, chatId, { message: statusMsg.id, text: formatStorageCooldownNotice(cooldownRetryAt) });
+                }
+                return { status: 'success' as const };
             }
 
             if (signal.aborted) {
