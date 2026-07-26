@@ -31,6 +31,7 @@ import { appRouteHref, parseAppRoute, routeForCategory, routeForSettings, type A
 import type { SettingsSectionId } from "./components/pages/settingsSections";
 import { IndeterminateSpinner } from "./components/ui/IndeterminateSpinner";
 import { buildFolderViewModels } from "./services/folderView";
+import { buildUploadTargetSnapshot } from "./services/uploadTargetSnapshot";
 
 const SettingsPage = lazy(() => import("./components/pages/SettingsPage").then(module => ({ default: module.SettingsPage })));
 const TasksPage = lazy(() => import("./components/pages/TasksPage").then(module => ({ default: module.TasksPage })));
@@ -526,12 +527,7 @@ function App() {
   };
 
   const startUpload = async (newFiles: File[], folder?: string) => {
-    const targetSnapshot: UploadTargetSnapshot = {
-      provider: activeStorageDisplay?.provider || storageConfig?.provider || 'local',
-      accountId: storageConfig?.activeAccountId || null,
-      accountName: activeStorageDisplay?.account || storageConfig?.activeAccountName || null,
-      folder: folder || null,
-    };
+    const targetSnapshot: UploadTargetSnapshot = buildUploadTargetSnapshot(storageConfig, activeStorageDisplay, folder);
     // 1. 创建队列项
     const newItems: QueueItem[] = newFiles.map(file => ({
       id: `${file.name}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
