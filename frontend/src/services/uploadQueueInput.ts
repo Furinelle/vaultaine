@@ -27,3 +27,7 @@ export function createUploadQueueInput<TItem, TSession = unknown>(
 export function attachUploadSession<TItem, TSession>(input: UploadQueueInput<TItem, TSession>, session: TSession): void {
     input.resumeSession = session;
 }
+
+export function detachUploadSession<TItem, TSession>(input: UploadQueueInput<TItem, TSession>): void {
+    input.resumeSession = undefined;
+}

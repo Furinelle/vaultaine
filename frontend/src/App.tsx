@@ -25,7 +25,7 @@ import { BoundedUploadQueue } from "./services/boundedUploadQueue";
 import { createUploadTelemetry, updateUploadTelemetry } from "./services/uploadTelemetry";
 import { describeFileViewState } from "./services/fileViewState";
 import { buildFolderBreadcrumbs, parentFolder } from "./services/folderNavigation";
-import { attachUploadSession, createUploadQueueInput, type UploadQueueInput } from "./services/uploadQueueInput";
+import { attachUploadSession, createUploadQueueInput, detachUploadSession, type UploadQueueInput } from "./services/uploadQueueInput";
 import { ConfirmDialog } from "./components/ui/ConfirmDialog";
 import { appRouteHref, parseAppRoute, routeForCategory, routeForSettings, type AppRoute } from "./services/appRoute";
 import type { SettingsSectionId } from "./components/pages/settingsSections";
@@ -62,6 +62,7 @@ function App() {
   const [hasMoreFiles, setHasMoreFiles] = useState(false);
   const [loadingMoreFiles, setLoadingMoreFiles] = useState(false);
   const latestFileRequestRef = useRef(new LatestRequest());
+  const hasDataRef = useRef(false);
 
   // 改用队列管理上传状态
   const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
@@ -81,22 +82,28 @@ function App() {
           target,
           session => attachUploadSession(input, session),
         );
-    await upload(progress => {
-      setUploadQueue(prev => prev.map(q => {
-        if (q.id !== item.id) return q;
-        const telemetry = updateUploadTelemetry(q.telemetry || createUploadTelemetry(progress.total), progress.loaded);
-        return {
-          ...q,
-          status: progress.percent === 100 ? 'processing' : 'uploading',
-          progress: progress.percent,
-          loadedBytes: progress.loaded,
-          totalBytes: progress.total,
-          bytesPerSecond: telemetry.bytesPerSecond,
-          etaSeconds: telemetry.etaSeconds,
-          telemetry,
-        };
-      }));
-    }, signal);
+    try {
+      await upload(progress => {
+        setUploadQueue(prev => prev.map(q => {
+          if (q.id !== item.id) return q;
+          const telemetry = updateUploadTelemetry(q.telemetry || createUploadTelemetry(progress.total), progress.loaded);
+          return {
+            ...q,
+            status: progress.percent === 100 ? 'processing' : 'uploading',
+            progress: progress.percent,
+            loadedBytes: progress.loaded,
+            totalBytes: progress.total,
+            bytesPerSecond: telemetry.bytesPerSecond,
+            etaSeconds: telemetry.etaSeconds,
+            telemetry,
+          };
+        }));
+      }, signal);
+    } catch (error: any) {
+      // 取消路径已在服务器上作废会话，清除快照避免重试永远走已死的续传。
+      if (error?.name === 'AbortError') detachUploadSession(input);
+      throw error;
+    }
   }));
   const [isQueueModalOpen, setIsQueueModalOpen] = useState(false);
   const [isUploadQueuePaused, setIsUploadQueuePaused] = useState(false);
@@ -125,6 +132,7 @@ function App() {
   const [batchDeletePreview, setBatchDeletePreview] = useState<BatchDeletePreview | null>(null);
   const [batchDeleteResult, setBatchDeleteResult] = useState<BatchDeleteResult | null>(null);
   const [searchQuery, setSearchQuery] = useState(() => initialRoute.kind === 'files' ? initialRoute.query : '');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(searchQuery);
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
   const [currentFolder, setCurrentFolder] = useState<string | null>(() => initialRoute.kind === 'files' ? initialRoute.folder : null); // 当前选中的文件夹
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>(() => initialRoute.kind === 'settings' ? initialRoute.section : 'general');
@@ -277,6 +285,12 @@ function App() {
     checkAuth();
   }, []);
 
+  // 搜索防抖：避免每次按键都触发列表与聚合请求。
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearchQuery(searchQuery), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
+
   const buildFileQueryOptions = useCallback((signal?: AbortSignal): FileQueryOptions => {
     let type: FileQueryOptions['type'];
     if (currentCategory === 'media') type = 'media';
@@ -284,7 +298,7 @@ function App() {
 
     const folder = currentCategory === 'ytdlp' ? 'ytdlp' : (currentFolder ?? null);
     return {
-      q: searchQuery,
+      q: debouncedSearchQuery,
       type,
       folder,
       favorite: currentCategory === 'favorites' ? true : undefined,
@@ -292,13 +306,13 @@ function App() {
       direction: sortConfig.direction,
       signal,
     };
-  }, [currentCategory, currentFolder, searchQuery, sortConfig]);
+  }, [currentCategory, currentFolder, debouncedSearchQuery, sortConfig]);
 
   // 加载文件列表：新 generation 中止旧请求，且只有最新 generation 可提交。
   const loadFiles = useCallback(async () => {
     if (!isAuthenticated) return;
     const request = latestFileRequestRef.current.begin();
-    const hadData = files.length > 0 || folderAggregations.length > 0;
+    const hadData = hasDataRef.current;
     try {
       setLoading(true);
       setQueryError(null);
@@ -313,6 +327,7 @@ function App() {
       if (!request.isCurrent()) return;
       setFiles(page.files);
       setFolderAggregations(globalFolders);
+      hasDataRef.current = page.files.length > 0 || globalFolders.length > 0;
       setFileCursor(page.nextCursor);
       setHasMoreFiles(page.hasMore);
       setIsStale(false);
@@ -331,6 +346,9 @@ function App() {
       if (request.isCurrent()) setLoading(false);
     }
   }, [isAuthenticated, buildFileQueryOptions, currentFolder, currentCategory]);
+
+  const loadFilesRef = useRef(loadFiles);
+  loadFilesRef.current = loadFiles;
 
   const loadMoreFiles = useCallback(async () => {
     if (!isAuthenticated || !hasMoreFiles || !fileCursor || loadingMoreFiles) return;
@@ -398,13 +416,6 @@ function App() {
     }
   }, [isAuthenticated, loadFiles, loadStorageStats, loadStorageConfig]);
 
-  // 监听分类变化
-  useEffect(() => {
-    if (isAuthenticated) {
-      loadFiles();
-    }
-  }, [currentCategory, isAuthenticated, loadFiles]);
-
   useEffect(() => {
     if (currentCategory === 'ytdlp') {
       setCurrentFolder(null);
@@ -459,6 +470,7 @@ function App() {
     setIsAuthenticated(false);
     setFiles([]);
     setFolderAggregations([]);
+    hasDataRef.current = false;
     setUploadQueue([]);
     setRecoveredUploads([]);
     setResumingSessionIds([]);
@@ -575,7 +587,7 @@ function App() {
       await Promise.all(uploadPromises);
 
       // 5. 刷新列表
-      await Promise.all([loadFiles(), loadStorageStats(), loadIncompleteUploads(false)]);
+      await Promise.all([loadFilesRef.current(), loadStorageStats(), loadIncompleteUploads(false)]);
 
     } catch (error: any) {
       console.error('批量上传过程出错:', error);
@@ -613,7 +625,7 @@ function App() {
       await uploadManagerRef.current.enqueue(item.id, input);
       setUploadQueue(prev => prev.map(entry => entry.id === item.id ? { ...entry, status: 'completed', progress: 100 } : entry));
       setRecoveredUploads(prev => prev.filter(entry => entry.uploadId !== session.uploadId));
-      await Promise.all([loadFiles(), loadStorageStats()]);
+      await Promise.all([loadFilesRef.current(), loadStorageStats()]);
     } catch (error: any) {
       const cancelled = error?.name === 'AbortError';
       setUploadQueue(prev => prev.map(entry => entry.id === item.id
@@ -687,7 +699,7 @@ function App() {
       setUploadQueue(prev => prev.map(item => item.id === id
         ? { ...item, status: 'completed', progress: 100, error: undefined }
         : item));
-      await Promise.all([loadFiles(), loadStorageStats()]);
+      await Promise.all([loadFilesRef.current(), loadStorageStats()]);
     } catch (error: any) {
       const cancelled = error?.name === 'AbortError';
       setUploadQueue(prev => prev.map(item => item.id === id

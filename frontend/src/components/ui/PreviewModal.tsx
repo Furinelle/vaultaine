@@ -189,6 +189,128 @@ const AudioPlayer = ({ file }: { file: FileData }) => {
     );
 };
 
+interface PreviewContentProps {
+    file: FileData;
+    scale: number;
+    setScale: React.Dispatch<React.SetStateAction<number>>;
+    imageLoaded: boolean;
+    setImageLoaded: React.Dispatch<React.SetStateAction<boolean>>;
+    imageError: boolean;
+    setImageError: React.Dispatch<React.SetStateAction<boolean>>;
+    imageErrorMessage: string;
+    setImageErrorMessage: React.Dispatch<React.SetStateAction<string>>;
+    imageReloadKey: number;
+    setImageReloadKey: React.Dispatch<React.SetStateAction<number>>;
+    onOpenOriginal: (e: React.MouseEvent) => void;
+    onDownload: (e?: React.MouseEvent) => void;
+}
+
+const PreviewContent = ({
+    file,
+    scale,
+    setScale,
+    imageLoaded,
+    setImageLoaded,
+    imageError,
+    setImageError,
+    imageErrorMessage,
+    setImageErrorMessage,
+    imageReloadKey,
+    setImageReloadKey,
+    onOpenOriginal,
+    onDownload
+}: PreviewContentProps) => {
+    if (file.type === "image") {
+        return (
+            <div
+                className="relative flex items-center justify-center"
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    setScale(prev => prev === 1 ? 2 : 1);
+                }}
+            >
+                {!imageLoaded && !imageError && (
+                    <div className="absolute inset-0 flex items-center justify-center z-10">
+                        <IndeterminateSpinner label="正在加载预览" size="lg" tone="inverse" />
+                    </div>
+                )}
+                {file.thumbnailUrl && (
+                    <img
+                        src={file.thumbnailUrl}
+                        alt=""
+                        aria-hidden="true"
+                        className={`absolute max-w-[90vw] max-h-[80vh] object-contain rounded-lg blur-md opacity-40 transition-opacity ${imageLoaded ? 'opacity-0' : 'opacity-40'}`}
+                    />
+                )}
+                {imageError ? (
+                    <div className="flex flex-col items-center gap-3 p-8 text-white/80">
+                        <FileText className="h-16 w-16 opacity-60" />
+                        <p>图片加载失败</p>
+                        <p className="max-w-xs text-center text-xs text-white/60">{imageErrorMessage}</p>
+                        <div className="flex gap-2">
+                            <Button
+                                variant="secondary"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setImageError(false);
+                                    setImageLoaded(false);
+                                    setImageReloadKey(key => key + 1);
+                                }}
+                                className="gap-2"
+                            >
+                                <RefreshCw className="h-4 w-4" />
+                                重新加载
+                            </Button>
+                            <Button variant="secondary" onClick={onOpenOriginal}>查看原图</Button>
+                        </div>
+                    </div>
+                ) : (
+                    <motion.img
+                        key={`${file.previewUrl}-${imageReloadKey}`}
+                        src={file.previewUrl}
+                        alt={file.name}
+                        animate={{ scale }}
+                        transition={{ duration: 0.2 }}
+                        drag={scale > 1}
+                        dragConstraints={{ left: -500, right: 500, top: -500, bottom: 500 }}
+                        dragElastic={0.08}
+                        onLoad={() => setImageLoaded(true)}
+                        onError={() => {
+                            setImageError(true);
+                            void resolveMediaErrorMessage(file.id, '云端媒体暂时无法读取，请稍后重试').then(setImageErrorMessage);
+                        }}
+                        className={`max-w-[94vw] max-h-[82vh] object-contain shadow-2xl rounded-lg cursor-grab active:cursor-grabbing transition-opacity ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
+                    />
+                )}
+            </div>
+        );
+    }
+    if (file.type === "video") {
+        return (
+            <div onClick={(e) => e.stopPropagation()}>
+                <VideoPlayer file={file} />
+            </div>
+        );
+    }
+    if (file.type === "audio") {
+        return <AudioPlayer file={file} />;
+    }
+    return (
+        <div className="flex flex-col items-center justify-center gap-6 text-white/80 p-12 max-w-md text-center" onClick={(e) => e.stopPropagation()}>
+            <FileText className="h-24 w-24 opacity-50" />
+            <div className="space-y-2">
+                <p className="text-lg font-medium text-white">暂不支持预览此类型文件</p>
+                <p className="text-sm text-white/60">{file.name}</p>
+            </div>
+            <Button variant="secondary" size="lg" onClick={onDownload} className="mt-4 gap-2">
+                <Download className="h-5 w-5" />
+                下载查看
+            </Button>
+        </div>
+    );
+};
+
 export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNavigate }: PreviewModalProps) => {
     const [scale, setScale] = useState(1);
     const [imageLoaded, setImageLoaded] = useState(false);
@@ -311,100 +433,6 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
         if (Date.now() - openedAtRef.current < 350) return;
         if (e.target !== e.currentTarget) return;
         onClose();
-    };
-
-    const PreviewContent = () => {
-        if (!file) return null;
-
-        if (file.type === "image") {
-            return (
-                <div
-                    className="relative flex items-center justify-center"
-                    onClick={(e) => e.stopPropagation()}
-                    onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        setScale(prev => prev === 1 ? 2 : 1);
-                    }}
-                >
-                    {!imageLoaded && !imageError && (
-                        <div className="absolute inset-0 flex items-center justify-center z-10">
-                            <IndeterminateSpinner label="正在加载预览" size="lg" tone="inverse" />
-                        </div>
-                    )}
-                    {file.thumbnailUrl && (
-                        <img
-                            src={file.thumbnailUrl}
-                            alt=""
-                            aria-hidden="true"
-                            className={`absolute max-w-[90vw] max-h-[80vh] object-contain rounded-lg blur-md opacity-40 transition-opacity ${imageLoaded ? 'opacity-0' : 'opacity-40'}`}
-                        />
-                    )}
-                    {imageError ? (
-                        <div className="flex flex-col items-center gap-3 p-8 text-white/80">
-                            <FileText className="h-16 w-16 opacity-60" />
-                            <p>图片加载失败</p>
-                            <p className="max-w-xs text-center text-xs text-white/60">{imageErrorMessage}</p>
-                            <div className="flex gap-2">
-                                <Button
-                                    variant="secondary"
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        setImageError(false);
-                                        setImageLoaded(false);
-                                        setImageReloadKey(key => key + 1);
-                                    }}
-                                    className="gap-2"
-                                >
-                                    <RefreshCw className="h-4 w-4" />
-                                    重新加载
-                                </Button>
-                                <Button variant="secondary" onClick={handleOpenOriginal}>查看原图</Button>
-                            </div>
-                        </div>
-                    ) : (
-                        <motion.img
-                            key={`${file.previewUrl}-${imageReloadKey}`}
-                            src={file.previewUrl}
-                            alt={file.name}
-                            animate={{ scale }}
-                            transition={{ duration: 0.2 }}
-                            drag={scale > 1}
-                            dragConstraints={{ left: -500, right: 500, top: -500, bottom: 500 }}
-                            dragElastic={0.08}
-                            onLoad={() => setImageLoaded(true)}
-                            onError={() => {
-                                setImageError(true);
-                                void resolveMediaErrorMessage(file.id, '云端媒体暂时无法读取，请稍后重试').then(setImageErrorMessage);
-                            }}
-                            className={`max-w-[94vw] max-h-[82vh] object-contain shadow-2xl rounded-lg cursor-grab active:cursor-grabbing transition-opacity ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
-                        />
-                    )}
-                </div>
-            );
-        }
-        if (file.type === "video") {
-            return (
-                <div onClick={(e) => e.stopPropagation()}>
-                    <VideoPlayer file={file} />
-                </div>
-            );
-        }
-        if (file.type === "audio") {
-            return <AudioPlayer file={file} />;
-        }
-        return (
-            <div className="flex flex-col items-center justify-center gap-6 text-white/80 p-12 max-w-md text-center" onClick={(e) => e.stopPropagation()}>
-                <FileText className="h-24 w-24 opacity-50" />
-                <div className="space-y-2">
-                    <p className="text-lg font-medium text-white">暂不支持预览此类型文件</p>
-                    <p className="text-sm text-white/60">{file.name}</p>
-                </div>
-                <Button variant="secondary" size="lg" onClick={handleDownload} className="mt-4 gap-2">
-                    <Download className="h-5 w-5" />
-                    下载查看
-                </Button>
-            </div>
-        );
     };
 
     // 使用 Portal 渲染到 body，确保全屏覆盖不受父元素影响
@@ -607,7 +635,21 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
                                 {currentImageIndex + 1} / {imageFiles.length} · 左右滑动切换图片
                             </div>
                         )}
-                        <PreviewContent />
+                        <PreviewContent
+                            file={file}
+                            scale={scale}
+                            setScale={setScale}
+                            imageLoaded={imageLoaded}
+                            setImageLoaded={setImageLoaded}
+                            imageError={imageError}
+                            setImageError={setImageError}
+                            imageErrorMessage={imageErrorMessage}
+                            setImageErrorMessage={setImageErrorMessage}
+                            imageReloadKey={imageReloadKey}
+                            setImageReloadKey={setImageReloadKey}
+                            onOpenOriginal={handleOpenOriginal}
+                            onDownload={handleDownload}
+                        />
                     </div>
 
                     {/* 移动端菜单 */}
