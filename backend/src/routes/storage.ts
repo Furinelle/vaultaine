@@ -20,7 +20,7 @@ import { deleteStorageAccountWithClient, StorageAccountConflictError, StorageAcc
 import { logOperationalEvent } from '../services/operationalEvents.js';
 import { webDestructiveConfirmationStore } from '../services/webDestructiveConfirmation.js';
 import { S3StorageProvider, StorageProbeError } from '../services/storage.js';
-import { runBucketImport, type BucketImportRecord } from '../services/bucketImport.js';
+import { getBucketImportTask, runBucketImport, startBucketImportTask, type BucketImportRecord } from '../services/bucketImport.js';
 import { getTelegramUserClientStatus } from '../services/telegramUserClientStatus.js';
 import { maintenanceImpact } from '../utils/maintenanceActions.js';
 import { buildStorageCapabilities, buildStorageStatsPayload } from '../utils/storageProductContract.js';
@@ -749,11 +749,13 @@ router.delete('/accounts/:id', requireAuth, async (req: Request, res: Response) 
     }
 });
 
-// 从当前活跃的 S3 存储桶导入未入库的文件（绕过 TG Vault 直传到桶里的文件借此补建索引）
+// 从当前活跃的 S3 存储桶导入未入库的文件（绕过 TG Vault 直传到桶里的文件借此补建索引）。
+// 大桶全量扫描远超请求超时，端点只负责加锁并启动后台任务，进度通过任务查询端点轮询。
 router.post('/import-from-bucket', requireAuth, async (_req: Request, res: Response) => {
     let client: PoolClient | null = null;
     let lockKey: string | null = null;
     let lockHeld = false;
+    let taskStarted = false;
     try {
         const { storageManager } = await import('../services/storage.js');
         const { getFileType, getMimeTypeFromFilename } = await import('../utils/telegramUtils.js');
@@ -775,59 +777,106 @@ router.post('/import-from-bucket', requireAuth, async (_req: Request, res: Respo
         );
         lockHeld = lockResult.rows[0]?.locked === true;
         if (!lockHeld) {
-            return res.status(409).json({ error: '当前存储账户已有导入任务正在运行' });
+            return res.status(409).json({ error: '当前存储账户已有导入任务正在运行', code: 'IMPORT_ALREADY_RUNNING' });
         }
 
-        const result = await runBucketImport({
-            listPage: token => provider.listObjectsPage(token),
-            insertBatch: async (records: BucketImportRecord[]) => {
-                const incoming = records.map(record => {
-                    const mimeType = getMimeTypeFromFilename(record.name);
-                    return {
-                        ...record,
-                        mimeType,
-                        type: getFileType(mimeType),
-                    };
-                });
-                const inserted = await client!.query(
-                    `WITH incoming AS (
-                        SELECT *
-                        FROM jsonb_to_recordset($2::jsonb) AS item(
-                            name text,
-                            "storedName" text,
-                            type text,
-                            "mimeType" text,
-                            size bigint,
-                            path text,
-                            folder text
+        const importClient = client;
+        const importLockKey = lockKey;
+        const task = startBucketImportTask({
+            accountId: activeAccountId,
+            run: onProgress => runBucketImport({
+                onProgress,
+                listPage: token => provider.listObjectsPage(token),
+                insertBatch: async (records: BucketImportRecord[]) => {
+                    const incoming = records.map(record => {
+                        const mimeType = getMimeTypeFromFilename(record.name);
+                        return {
+                            ...record,
+                            mimeType,
+                            type: getFileType(mimeType),
+                        };
+                    });
+                    const inserted = await importClient.query(
+                        `WITH incoming AS (
+                            SELECT *
+                            FROM jsonb_to_recordset($2::jsonb) AS item(
+                                name text,
+                                "storedName" text,
+                                type text,
+                                "mimeType" text,
+                                size bigint,
+                                path text,
+                                folder text
+                            )
                         )
-                    )
-                    INSERT INTO files
-                    (name, stored_name, type, mime_type, size, path, thumbnail_path, preview_path, width, height, source, folder, storage_account_id)
-                    SELECT item.name, item."storedName", item.type, item."mimeType", item.size, item.path,
-                           NULL, NULL, NULL, NULL, $3, item.folder, $1
-                    FROM incoming item
-                    ON CONFLICT (storage_account_id, path)
-                        WHERE storage_account_id IS NOT NULL
-                        DO NOTHING
-                    RETURNING id`,
-                    [activeAccountId, JSON.stringify(incoming), provider.name],
-                );
-                return inserted.rowCount || 0;
+                        INSERT INTO files
+                        (name, stored_name, type, mime_type, size, path, thumbnail_path, preview_path, width, height, source, folder, storage_account_id)
+                        SELECT item.name, item."storedName", item.type, item."mimeType", item.size, item.path,
+                               NULL, NULL, NULL, NULL, $3, item.folder, $1
+                        FROM incoming item
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM chunk_upload_reconciliations r
+                            WHERE r.status = 'pending' AND r.account_id = $1 AND r.stored_path = item.path
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM telegram_write_reconciliations r
+                            WHERE r.status = 'pending' AND r.account_id = $1 AND r.stored_path = item.path
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM ytdlp_write_reconciliations r
+                            WHERE r.status = 'pending' AND r.account_id = $1 AND r.stored_path = item.path
+                        )
+                        ON CONFLICT (storage_account_id, path)
+                            WHERE storage_account_id IS NOT NULL
+                            DO NOTHING
+                        RETURNING id`,
+                        [activeAccountId, JSON.stringify(incoming), provider.name],
+                    );
+                    return inserted.rowCount || 0;
+                },
+            }),
+            onSettled: async finished => {
+                if (finished.status === 'failed') {
+                    console.error('从存储桶导入失败:', finished.error);
+                } else {
+                    console.log(`[Storage] Bucket import done: scanned=${finished.scanned} imported=${finished.imported} skipped=${finished.skipped} excluded=${finished.excluded}`);
+                }
+                await importClient.query('SELECT pg_advisory_unlock(hashtext($1))', [importLockKey]).catch(() => undefined);
+                importClient.release();
             },
         });
-
-        console.log(`[Storage] Bucket import done: scanned=${result.scanned} imported=${result.imported} skipped=${result.skipped} excluded=${result.excluded}`);
-        res.json({ success: true, ...result });
+        taskStarted = true;
+        res.status(202).json({ success: true, taskId: task.id });
     } catch (error) {
-        console.error('从存储桶导入失败:', error);
+        console.error('启动存储桶导入失败:', error);
         res.status(500).json({ error: '从存储桶导入失败' });
     } finally {
-        if (client && lockHeld && lockKey) {
-            await client.query('SELECT pg_advisory_unlock(hashtext($1))', [lockKey]).catch(() => undefined);
+        if (!taskStarted) {
+            if (client && lockHeld && lockKey) {
+                await client.query('SELECT pg_advisory_unlock(hashtext($1))', [lockKey]).catch(() => undefined);
+            }
+            client?.release();
         }
-        client?.release();
     }
+});
+
+// 查询后台导入任务进度；任务表在内存中，进程重启后返回 404，前端应把它解释为任务已中断
+router.get('/import-from-bucket/tasks/:taskId', requireAuth, (req: Request, res: Response) => {
+    const task = getBucketImportTask(String(req.params.taskId || ''));
+    if (!task) {
+        return res.status(404).json({ error: '导入任务不存在（服务可能已重启，任务已中断）', code: 'IMPORT_TASK_NOT_FOUND' });
+    }
+    res.json({
+        id: task.id,
+        status: task.status,
+        scanned: task.scanned,
+        imported: task.imported,
+        skipped: task.skipped,
+        excluded: task.excluded,
+        error: task.error,
+        startedAt: task.startedAt,
+        finishedAt: task.finishedAt,
+    });
 });
 
 export default router;

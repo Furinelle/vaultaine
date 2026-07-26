@@ -8,6 +8,8 @@ import { useTheme } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
 import { fileApi, type AdvancedTaskSettings, type StorageAccount, type StorageConfig, type StorageStats } from "../../services/api";
 import { isTrustedOAuthPopupMessage } from "../../services/oauthPopupMessage";
+import { getBucketImportTask, startBucketImport, type BucketImportTask } from "../../services/bucketImportApi";
+import { pollBucketImportTask } from "../../services/bucketImportPolling";
 import { authService } from "../../services/auth";
 import { SETTINGS_SECTIONS, type SettingsSectionId } from "./settingsSections";
 import { useRuntimeUiLocalization } from "./useRuntimeUiLocalization";
@@ -550,23 +552,45 @@ export const SettingsPage = ({ storageStats, onSignedOut, activeSection, onSecti
     };
 
     const [isImporting, setIsImporting] = useState(false);
+    const [importProgress, setImportProgress] = useState<BucketImportTask | null>(null);
     const handleImportFromBucket = async () => {
         const confirmed = await requestConfirmation(
-            '扫描当前 S3 存储桶，将桶内还未在 TG Vault 登记的文件导入到文件列表（自动跳过 _backups/ 备份目录）。继续吗？',
+            '扫描当前 S3 存储桶，将桶内还未在 TG Vault 登记的文件导入到文件列表（自动跳过 _backups/ 备份目录）。导入在后台运行，可随时查看进度。继续吗？',
             '从存储桶导入',
         );
         if (!confirmed) return;
         setIsImporting(true);
+        setImportProgress(null);
         try {
-            const result = await fileApi.importFromBucket();
-            await showNotice(
-                `扫描 ${result.scanned} 个对象，新导入 ${result.imported} 个，已存在跳过 ${result.skipped} 个，排除 ${result.excluded} 个`,
-                '导入完成',
-            );
+            const { taskId } = await startBucketImport();
+            // 轮询容忍瞬时网络失败（wifi 抖动、后端重启窗口），避免后台导入仍在跑却误报失败
+            const task = await pollBucketImportTask(() => getBucketImportTask(taskId), { onProgress: setImportProgress });
+            if (task.status === 'completed') {
+                await showNotice(
+                    `扫描 ${task.scanned} 个对象，新导入 ${task.imported} 个，已存在跳过 ${task.skipped} 个，排除 ${task.excluded} 个`,
+                    '导入完成',
+                );
+                return;
+            }
+            if (task.status === 'failed') {
+                await showNotice('从存储桶导入失败: ' + (task.error || '未知错误'), '导入失败');
+                return;
+            }
         } catch (error: any) {
+            if (error?.message === 'UNAUTHORIZED') {
+                authService.clearToken();
+                await showNotice('登录已过期，请重新登录后再继续导入。', '登录已过期');
+                onSignedOut?.();
+                return;
+            }
+            if (error?.message === 'IMPORT_TASK_LOST') {
+                await showNotice('服务在导入期间重启，本次导入已中断。已导入的文件已保留，可重新发起导入继续补齐。', '导入中断');
+                return;
+            }
             await showNotice('从存储桶导入失败: ' + error.message, '导入失败');
         } finally {
             setIsImporting(false);
+            setImportProgress(null);
         }
     };
 
@@ -1800,7 +1824,9 @@ export const SettingsPage = ({ storageStats, onSignedOut, activeSection, onSecti
                                                 onClick={handleImportFromBucket}
                                                 disabled={isImporting || isSaving}
                                             >
-                                                {isImporting ? "正在导入..." : "从存储桶导入"}
+                                                {isImporting
+                                                    ? (importProgress ? `已扫描 ${importProgress.scanned} · 已导入 ${importProgress.imported}` : "正在导入...")
+                                                    : "从存储桶导入"}
                                             </Button>
                                             <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400">
                                                 <CheckCircle className="h-3.5 w-3.5" />

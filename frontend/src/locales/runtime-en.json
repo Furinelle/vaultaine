@@ -280,5 +280,17 @@
   "目标保持为：${taskTarget(pendingAction.task)}": "Target remains: ${taskTarget(pendingAction.task)}",
   "返回": "Back",
   "确认取消": "Confirm cancellation",
-  "确认重试": "Confirm retry"
+  "确认重试": "Confirm retry",
+  "从存储桶导入": "Import from bucket",
+  "正在导入...": "Importing...",
+  "扫描当前 S3 存储桶，将桶内还未在 TG Vault 登记的文件导入到文件列表（自动跳过 _backups/ 备份目录）。导入在后台运行，可随时查看进度。继续吗？": "Scan the active S3 bucket and index files not yet registered in TG Vault (the _backups/ directory is skipped automatically). The import runs in the background and its progress can be checked at any time. Continue?",
+  "扫描 ${task.scanned} 个对象，新导入 ${task.imported} 个，已存在跳过 ${task.skipped} 个，排除 ${task.excluded} 个": "Scanned ${task.scanned} objects, imported ${task.imported} new, skipped ${task.skipped} existing, excluded ${task.excluded}",
+  "已扫描 ${importProgress.scanned} · 已导入 ${importProgress.imported}": "Scanned ${importProgress.scanned} · Imported ${importProgress.imported}",
+  "导入完成": "Import completed",
+  "导入失败": "Import failed",
+  "导入中断": "Import interrupted",
+  "未知错误": "Unknown error",
+  "登录已过期": "Session expired",
+  "登录已过期，请重新登录后再继续导入。": "Your session has expired. Please sign in again to continue the import.",
+  "服务在导入期间重启，本次导入已中断。已导入的文件已保留，可重新发起导入继续补齐。": "The server restarted during the import, so this import was interrupted. Files already imported are kept; start the import again to pick up the rest."
 }

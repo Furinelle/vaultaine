@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { normalizeFolderPath } from '../utils/folderPath.js';
 
 export interface BucketObject {
@@ -51,10 +52,18 @@ export function normalizeBucketObjectForImport(object: BucketObject): BucketImpo
     };
 }
 
+export interface BucketImportProgress {
+    scanned: number;
+    imported: number;
+    skipped: number;
+    excluded: number;
+}
+
 export async function runBucketImport(options: {
     listPage: (continuationToken?: string) => Promise<BucketImportPage>;
     insertBatch: (records: BucketImportRecord[]) => Promise<number>;
-}): Promise<{ scanned: number; imported: number; skipped: number; excluded: number }> {
+    onProgress?: (progress: BucketImportProgress) => void;
+}): Promise<BucketImportProgress> {
     let continuationToken: string | undefined;
     const seenTokens = new Set<string>();
     const result = { scanned: 0, imported: 0, skipped: 0, excluded: 0 };
@@ -76,6 +85,7 @@ export async function runBucketImport(options: {
             result.skipped += records.length - inserted;
         }
 
+        options.onProgress?.({ ...result });
         const nextToken = page.nextContinuationToken;
         if (nextToken && seenTokens.has(nextToken)) {
             throw new Error('存储桶分页游标重复');
@@ -85,4 +95,71 @@ export async function runBucketImport(options: {
     } while (continuationToken);
 
     return result;
+}
+
+export type BucketImportTaskStatus = 'running' | 'completed' | 'failed';
+
+export interface BucketImportTaskSnapshot extends BucketImportProgress {
+    id: string;
+    accountId: string;
+    status: BucketImportTaskStatus;
+    error: string | null;
+    startedAt: string;
+    finishedAt: string | null;
+}
+
+const importTasks = new Map<string, BucketImportTaskSnapshot>();
+const FINISHED_TASK_RETENTION = 20;
+
+function pruneFinishedImportTasks(): void {
+    const finished = [...importTasks.values()]
+        .filter(task => task.status !== 'running')
+        .sort((a, b) => String(a.finishedAt).localeCompare(String(b.finishedAt)));
+    for (const task of finished.slice(0, Math.max(0, finished.length - FINISHED_TASK_RETENTION))) {
+        importTasks.delete(task.id);
+    }
+}
+
+export function getBucketImportTask(id: string): BucketImportTaskSnapshot | null {
+    const task = importTasks.get(id);
+    return task ? { ...task } : null;
+}
+
+export function startBucketImportTask(options: {
+    accountId: string;
+    run: (onProgress: (progress: BucketImportProgress) => void) => Promise<BucketImportProgress>;
+    onSettled?: (task: BucketImportTaskSnapshot) => Promise<void> | void;
+}): BucketImportTaskSnapshot {
+    const task: BucketImportTaskSnapshot = {
+        id: randomUUID(),
+        accountId: options.accountId,
+        status: 'running',
+        scanned: 0,
+        imported: 0,
+        skipped: 0,
+        excluded: 0,
+        error: null,
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+    };
+    importTasks.set(task.id, task);
+    void (async () => {
+        try {
+            const result = await options.run(progress => Object.assign(task, progress));
+            Object.assign(task, result);
+            task.status = 'completed';
+        } catch (error) {
+            task.status = 'failed';
+            task.error = error instanceof Error ? error.message : String(error);
+        } finally {
+            task.finishedAt = new Date().toISOString();
+            pruneFinishedImportTasks();
+            try {
+                await options.onSettled?.({ ...task });
+            } catch (settleError) {
+                console.error('存储桶导入任务收尾失败:', settleError);
+            }
+        }
+    })();
+    return { ...task };
 }
