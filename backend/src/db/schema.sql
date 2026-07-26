@@ -100,12 +100,27 @@ CREATE TABLE IF NOT EXISTS files (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE files DROP CONSTRAINT IF EXISTS files_storage_account_id_fkey;
+ALTER TABLE files ADD CONSTRAINT files_storage_account_id_fkey
+    FOREIGN KEY (storage_account_id) REFERENCES storage_accounts(id) ON DELETE CASCADE;
 
 CREATE INDEX IF NOT EXISTS idx_files_type ON files(type);
 CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder);
 CREATE INDEX IF NOT EXISTS idx_files_is_favorite ON files(is_favorite);
 CREATE INDEX IF NOT EXISTS idx_files_storage_account_id ON files(storage_account_id);
+-- 建唯一索引前去重：同账户同 path 只保留最早一行
+DELETE FROM files WHERE id IN (
+    SELECT id FROM (
+        SELECT id, ROW_NUMBER() OVER (
+            PARTITION BY storage_account_id, path
+            ORDER BY created_at ASC, id ASC
+        ) AS rn
+        FROM files
+        WHERE storage_account_id IS NOT NULL
+    ) ranked
+    WHERE ranked.rn > 1
+);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_files_account_path_unique
     ON files(storage_account_id, path)
     WHERE storage_account_id IS NOT NULL;
