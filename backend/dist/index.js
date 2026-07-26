@@ -3704,6 +3704,7 @@ import { Api as Api4 } from "telegram";
 import fs7 from "fs";
 import path11 from "path";
 import crypto11 from "crypto";
+import { pipeline } from "stream/promises";
 import bigInt from "big-integer";
 
 // src/utils/thumbnail.ts
@@ -7234,22 +7235,20 @@ async function downloadAndSaveFile(client2, message, originalFileName, targetDir
       }
     } else {
       const writeStream = fs7.createWriteStream(filePath);
-      for await (const chunk of client2.iterDownload({
-        file: media,
-        requestSize: TELEGRAM_DOWNLOAD_PART_SIZE
-      })) {
-        if (signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
-        writeStream.write(chunk);
-        downloadedSize += chunk.length;
-        if (onProgress && totalSize > 0) {
-          onProgress(downloadedSize, totalSize);
+      const source = async function* () {
+        for await (const chunk of client2.iterDownload({
+          file: media,
+          requestSize: TELEGRAM_DOWNLOAD_PART_SIZE
+        })) {
+          if (signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
+          downloadedSize += chunk.length;
+          if (onProgress && totalSize > 0) {
+            onProgress(downloadedSize, totalSize);
+          }
+          yield chunk;
         }
-      }
-      writeStream.end();
-      await new Promise((resolve, reject) => {
-        writeStream.on("finish", resolve);
-        writeStream.on("error", reject);
-      });
+      };
+      await pipeline(source(), writeStream);
     }
     const stats = fs7.statSync(filePath);
     if (totalSize > 0 && stats.size !== totalSize) {
@@ -10393,6 +10392,9 @@ var UPLOAD_DIR2 = path12.resolve(process.env.UPLOAD_DIR || "./data/uploads");
 var THUMBNAIL_DIR2 = path12.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
 var YTDLP_WORK_DIR = path12.resolve(process.env.YTDLP_WORK_DIR || path12.join(UPLOAD_DIR2, "ytdlp"));
 var ORPHAN_MIN_AGE_MS = Math.max(6e4, parseInt(process.env.ORPHAN_CLEANUP_MIN_AGE_MS || "600000", 10) || 6e5);
+var CHUNK_DIR = path12.resolve(process.env.CHUNK_DIR || "./data/chunks");
+var CHUNK_SESSION_TTL_MS = Math.max(60 * 60 * 1e3, parseInt(process.env.CHUNK_SESSION_TTL_MS || String(24 * 60 * 60 * 1e3), 10) || 24 * 60 * 60 * 1e3);
+var CHUNK_ORPHAN_MIN_AGE_MS = Math.max(CHUNK_SESSION_TTL_MS, ORPHAN_MIN_AGE_MS);
 function isReservedTransientUploadPath(filePath, reservedDirs = [YTDLP_WORK_DIR]) {
   const resolvedPath = path12.resolve(filePath);
   return reservedDirs.some((directory) => {
@@ -10471,6 +10473,43 @@ function removeEmptyDirectories(dirPath) {
     console.warn(`\u{1F9F9} \u5220\u9664\u7A7A\u6587\u4EF6\u5939\u5931\u8D25: ${dirPath}`, e);
   }
 }
+async function listChunkSessionUploadIds() {
+  const result = await query(`SELECT upload_id FROM chunk_upload_sessions`);
+  return new Set(result.rows.map((row) => String(row.upload_id)));
+}
+async function cleanupOrphanChunkDirectories(options = {}) {
+  const chunkDir = path12.resolve(options.chunkDir ?? CHUNK_DIR);
+  const uploadDir = path12.resolve(options.uploadDir ?? UPLOAD_DIR2);
+  const minAgeMs = options.minAgeMs ?? CHUNK_ORPHAN_MIN_AGE_MS;
+  const removed = [];
+  if (chunkDir === uploadDir || chunkDir.startsWith(`${uploadDir}${path12.sep}`) || uploadDir.startsWith(`${chunkDir}${path12.sep}`)) {
+    return removed;
+  }
+  let entries;
+  try {
+    entries = await fs8.promises.readdir(chunkDir);
+  } catch (error) {
+    if (error?.code === "ENOENT") return removed;
+    throw error;
+  }
+  if (entries.length === 0) return removed;
+  const activeUploadIds = await (options.listActiveUploadIds ?? listChunkSessionUploadIds)();
+  for (const name of entries) {
+    if (activeUploadIds.has(name)) continue;
+    const target = path12.join(chunkDir, name);
+    try {
+      const stat = await fs8.promises.lstat(target);
+      if (!stat.isDirectory()) continue;
+      if (Date.now() - stat.mtimeMs < minAgeMs) continue;
+      await fs8.promises.rm(target, { recursive: true, force: true });
+      removed.push(name);
+      console.log(`\u{1F9F9} \u5220\u9664\u5B64\u513F\u5206\u5757\u76EE\u5F55: ${target}`);
+    } catch (error) {
+      console.warn(`\u{1F9F9} \u6E05\u7406\u5B64\u513F\u5206\u5757\u76EE\u5F55\u5931\u8D25: ${target}`, error);
+    }
+  }
+  return removed;
+}
 async function cleanupOrphanFiles() {
   const stats = {
     deletedCount: 0,
@@ -10517,6 +10556,14 @@ async function cleanupOrphanFiles() {
       }
     }
     removeEmptyDirectories(UPLOAD_DIR2);
+    try {
+      const orphanChunkDirs = await cleanupOrphanChunkDirectories();
+      if (orphanChunkDirs.length > 0) {
+        console.log(`\u{1F9F9} \u6E05\u7406\u5B64\u513F\u5206\u5757\u76EE\u5F55: ${orphanChunkDirs.length} \u4E2A`);
+      }
+    } catch (e) {
+      console.error("\u{1F9F9} \u5B64\u513F\u5206\u5757\u76EE\u5F55\u6E05\u7406\u5931\u8D25:", e);
+    }
     stats.freedSpace = formatBytes2(stats.freedBytes);
     if (stats.deletedCount > 0) {
       console.log(`\u{1F9F9} \u6E05\u7406\u5B8C\u6210: \u5220\u9664 ${stats.deletedCount} \u4E2A\u5B64\u513F\u6587\u4EF6\uFF0C\u91CA\u653E ${stats.freedSpace}`);
@@ -11002,6 +11049,7 @@ init_storageAccountLifecycle();
 var YTDLP_BIN = process.env.YTDLP_BIN || "yt-dlp";
 var YTDLP_WORK_DIR2 = process.env.YTDLP_WORK_DIR || "./data/uploads/ytdlp";
 var YTDLP_MAX_CONCURRENT = Math.max(1, parseInt(process.env.YTDLP_MAX_CONCURRENT || "1", 10) || 1);
+var YTDLP_PERSISTENCE_FAILURE_LIMIT = 3;
 var activeControllers = /* @__PURE__ */ new Map();
 var initialized = false;
 var taskNotifier = null;
@@ -11226,16 +11274,23 @@ async function executeYtDlpTask(id) {
   if (!task) return;
   const controller = new AbortController();
   activeControllers.set(id, controller);
+  let heartbeatFailures = 0;
   const heartbeat = setInterval(() => {
     void renewYtDlpExecution(pool, id, execution.generation, execution.leaseToken).then((owned) => {
+      heartbeatFailures = 0;
       if (!owned) controller.abort("execution_lease_lost");
-    }).catch(() => controller.abort("execution_heartbeat_failed"));
+    }).catch((error) => {
+      heartbeatFailures += 1;
+      console.error(`[yt-dlp] heartbeat renewal failed (${heartbeatFailures}/${YTDLP_PERSISTENCE_FAILURE_LIMIT}): ${id}`, error);
+      if (heartbeatFailures >= YTDLP_PERSISTENCE_FAILURE_LIMIT) controller.abort("execution_heartbeat_failed");
+    });
   }, 3e4);
   const workBaseDir = path14.isAbsolute(YTDLP_WORK_DIR2) ? YTDLP_WORK_DIR2 : path14.join(process.cwd(), YTDLP_WORK_DIR2);
   const taskDir = path14.join(workBaseDir, id);
   await safeRmDir(taskDir);
   ensureDir(taskDir);
   let lastProgressPersistedAt = 0;
+  let progressFailures = 0;
   try {
     await runYtDlpDownload(String(task.payload.url || task.source || ""), taskDir, controller.signal, (progress) => {
       const now = Date.now();
@@ -11245,10 +11300,12 @@ async function executeYtDlpTask(id) {
         progress: Math.min(90, progress.percent * 0.9),
         payload: { speed: progress.speed || null, eta: progress.eta || null }
       }).then((owned) => {
+        progressFailures = 0;
         if (!owned) controller.abort("execution_lease_lost");
       }).catch((error) => {
-        console.error(`[yt-dlp] progress persistence failed: ${id}`, error);
-        controller.abort("progress_persistence_failed");
+        progressFailures += 1;
+        console.error(`[yt-dlp] progress persistence failed (${progressFailures}/${YTDLP_PERSISTENCE_FAILURE_LIMIT}): ${id}`, error);
+        if (progressFailures >= YTDLP_PERSISTENCE_FAILURE_LIMIT) controller.abort("progress_persistence_failed");
       });
     });
     const primary = selectPrimaryOutputFile(taskDir);
@@ -11318,10 +11375,12 @@ async function executeYtDlpTask(id) {
       ].join("\n"));
     }
   } catch (error) {
-    const current2 = await getTransferTask("ytdlp", id);
-    const cancelled = controller.signal.aborted || current2?.status === "cancelled" || current2?.status === "pending";
+    const abortReason = controller.signal.aborted ? controller.signal.reason : null;
+    const persistenceAbort = abortReason === "execution_heartbeat_failed" || abortReason === "progress_persistence_failed";
+    const current2 = await getTransferTask("ytdlp", id).catch(() => null);
+    const cancelled = current2?.status === "cancelled" || current2?.status === "pending" || controller.signal.aborted && !persistenceAbort;
     if (!cancelled) {
-      let message = classifyYtDlpError(error);
+      let message = persistenceAbort ? "\u4EFB\u52A1\u72B6\u6001\u6301\u4E45\u5316\u8FDE\u7EED\u5931\u8D25\uFF0C\u5DF2\u4E2D\u65AD\u6267\u884C\uFF0C\u53EF\u7A0D\u540E\u91CD\u8BD5\u3002" : classifyYtDlpError(error);
       if (isStorageQuotaCooldownError(error)) {
         await markStorageAccountCooldown(error.storageAccountId || task.targetAccountId, error.provider, error.reason, error.cooldownUntil, error.message);
         message = `${formatStorageCooldownNotice(error.cooldownUntil)} \u53EF\u5728\u6062\u590D\u65F6\u95F4\u540E\u91CD\u8BD5\u672C\u4EFB\u52A1\u3002`;
@@ -11339,6 +11398,9 @@ async function executeYtDlpTask(id) {
         error: pendingJournal ? `${message}\uFF1B\u5916\u90E8\u5199\u7ED3\u679C\u5F85\u5BF9\u8D26\uFF0C\u5DF2\u963B\u6B62\u91CD\u8BD5\u3002` : message,
         retryable: !pendingJournal,
         failedItems: 1
+      }).catch((settleError) => {
+        console.error(`[yt-dlp] failure settlement failed: ${id}`, settleError);
+        return false;
       });
       if (failed) {
         const failedTask = await getTransferTask("ytdlp", id);
@@ -11378,7 +11440,9 @@ var PersistentYtDlpQueue = class {
     while (this.activeCount < this.maxConcurrent && this.pending.length > 0) {
       const id = this.pending.shift();
       this.activeCount += 1;
-      void this.worker(id).finally(() => {
+      void this.worker(id).catch((error) => {
+        console.error(`[yt-dlp] worker failed unexpectedly: ${id}`, error);
+      }).finally(() => {
         this.known.delete(id);
         this.activeCount -= 1;
         void this.shouldRequeue(id).then((requeue) => {
@@ -18146,7 +18210,7 @@ import crypto23 from "node:crypto";
 import fs17 from "node:fs";
 import fsPromises2 from "node:fs/promises";
 import path23 from "node:path";
-import { pipeline as pipeline2 } from "node:stream/promises";
+import { pipeline as pipeline3 } from "node:stream/promises";
 import { rateLimit as rateLimit3 } from "express-rate-limit";
 import checkDiskSpaceModule3 from "check-disk-space";
 init_storage();
@@ -18346,25 +18410,43 @@ import crypto22 from "node:crypto";
 import fs16 from "node:fs";
 import fsPromises from "node:fs/promises";
 import path22 from "node:path";
-import { pipeline } from "node:stream/promises";
+import { pipeline as pipeline2 } from "node:stream/promises";
 var ChunkUploadProtocolError = class extends Error {
   constructor(name, message) {
     super(message);
     this.name = name;
   }
 };
+var CHUNK_LOCK_STALE_MS = 10 * 60 * 1e3;
+async function openChunkLock(lockPath) {
+  try {
+    return await fsPromises.open(lockPath, "wx");
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+  try {
+    const lockStat = await fsPromises.stat(lockPath);
+    if (Date.now() - lockStat.mtimeMs < CHUNK_LOCK_STALE_MS) {
+      throw new ChunkUploadProtocolError("ChunkWriteBusyError", "\u540C\u4E00\u5206\u5757\u6B63\u5728\u5199\u5165\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5");
+    }
+    await fsPromises.rm(lockPath, { force: true });
+  } catch (error) {
+    if (error instanceof ChunkUploadProtocolError) throw error;
+    if (error?.code !== "ENOENT") throw error;
+  }
+  try {
+    return await fsPromises.open(lockPath, "wx");
+  } catch (error) {
+    if (error?.code === "EEXIST") throw new ChunkUploadProtocolError("ChunkWriteBusyError", "\u540C\u4E00\u5206\u5757\u6B63\u5728\u5199\u5165\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5");
+    throw error;
+  }
+}
 async function writeChunkAtomically(input) {
   await fsPromises.mkdir(path22.dirname(input.finalPath), { recursive: true });
   const committedPath = `${input.finalPath}.${crypto22.randomUUID()}.chunk`;
   const temporaryPath = `${committedPath}.part`;
   const lockPath = `${input.finalPath}.lock`;
-  let lockHandle;
-  try {
-    lockHandle = await fsPromises.open(lockPath, "wx");
-  } catch (error) {
-    if (error?.code === "EEXIST") throw new ChunkUploadProtocolError("ChunkWriteBusyError", "\u540C\u4E00\u5206\u5757\u6B63\u5728\u5199\u5165\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5");
-    throw error;
-  }
+  const lockHandle = await openChunkLock(lockPath);
   const hash2 = crypto22.createHash("sha256");
   let size = 0;
   const counter = new (await import("node:stream")).Transform({
@@ -18376,7 +18458,7 @@ async function writeChunkAtomically(input) {
     }
   });
   try {
-    await pipeline(input.stream, counter, fs16.createWriteStream(temporaryPath, { flags: "wx" }));
+    await pipeline2(input.stream, counter, fs16.createWriteStream(temporaryPath, { flags: "wx" }));
     if (size !== input.expectedSize) throw new ChunkUploadProtocolError("ChunkSizeMismatchError", "\u5206\u5757\u5927\u5C0F\u4E0D\u5339\u914D");
     const sha2562 = hash2.digest("hex");
     if (sha2562 !== input.expectedSha256.toLowerCase()) throw new ChunkUploadProtocolError("ChunkHashMismatchError", "\u5206\u5757\u54C8\u5E0C\u4E0D\u5339\u914D");
@@ -18399,7 +18481,7 @@ async function verifyChunkIntegrity(chunk, expectedDirectory, maxChunkBytes) {
     throw new ChunkUploadProtocolError("ChunkSizeMismatchError", `\u5206\u5757 ${chunk.index} \u5927\u5C0F\u65E0\u6548`);
   }
   const hash2 = crypto22.createHash("sha256");
-  await pipeline(fs16.createReadStream(chunkPath), new (await import("node:stream")).Writable({
+  await pipeline2(fs16.createReadStream(chunkPath), new (await import("node:stream")).Writable({
     write(buffer, _encoding, callback) {
       hash2.update(buffer);
       callback();
@@ -18887,7 +18969,7 @@ var router6 = Router6();
 var checkDiskSpace3 = checkDiskSpaceModule3.default || checkDiskSpaceModule3;
 var UPLOAD_DIR7 = process.env.UPLOAD_DIR || "./data/uploads";
 var THUMBNAIL_DIR6 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
-var CHUNK_DIR = process.env.CHUNK_DIR || "./data/chunks";
+var CHUNK_DIR2 = process.env.CHUNK_DIR || "./data/chunks";
 var MAX_CHUNK_BYTES = Math.max(1024 * 1024, (parseInt(process.env.MAX_UPLOAD_CHUNK_MB || "32", 10) || 32) * 1024 * 1024);
 var MAX_TOTAL_BYTES = Math.max(MAX_CHUNK_BYTES, (parseInt(process.env.MAX_CHUNK_UPLOAD_GB || "20", 10) || 20) * 1024 ** 3);
 var GLOBAL_BUDGET_BYTES = Math.max(MAX_TOTAL_BYTES, (parseInt(process.env.CHUNK_GLOBAL_BUDGET_GB || "40", 10) || 40) * 1024 ** 3);
@@ -18895,13 +18977,13 @@ var DISK_RESERVE_BYTES = Math.max(1024 ** 3, (parseInt(process.env.CHUNK_DISK_RE
 var MAX_TOTAL_CHUNKS = Math.max(1, parseInt(process.env.MAX_TOTAL_CHUNKS || "50000", 10) || 5e4);
 var SESSION_TTL_MS = Math.max(60 * 60 * 1e3, parseInt(process.env.CHUNK_SESSION_TTL_MS || String(24 * 60 * 60 * 1e3), 10));
 var COMPLETION_LEASE_MS = Math.max(6e4, parseInt(process.env.CHUNK_COMPLETION_LEASE_MS || String(30 * 60 * 1e3), 10));
-[UPLOAD_DIR7, THUMBNAIL_DIR6, CHUNK_DIR].forEach((dir) => fs17.mkdirSync(dir, { recursive: true }));
+[UPLOAD_DIR7, THUMBNAIL_DIR6, CHUNK_DIR2].forEach((dir) => fs17.mkdirSync(dir, { recursive: true }));
 var chunkRepository = new PostgresChunkUploadSessionRepository(pool);
 var chunkStore = new ChunkUploadSessionStore(chunkRepository, {
   maxTotalBytes: MAX_TOTAL_BYTES,
   globalBudgetBytes: GLOBAL_BUDGET_BYTES,
   diskReserveBytes: DISK_RESERVE_BYTES,
-  getDiskFreeBytes: async () => (await checkDiskSpace3(path23.resolve(CHUNK_DIR))).free
+  getDiskFreeBytes: async () => (await checkDiskSpace3(path23.resolve(CHUNK_DIR2))).free
 });
 var runChunkMaintenance = async () => {
   const reconciliationLease = crypto23.randomUUID();
@@ -18917,7 +18999,7 @@ var runChunkMaintenance = async () => {
   }
   const expiredIds = await chunkRepository.deleteExpiredSessions(100);
   await Promise.all(expiredIds.map(
-    (uploadId) => fsPromises2.rm(path23.join(CHUNK_DIR, uploadId), { recursive: true, force: true }).catch((error) => console.error(`\u6E05\u7406\u8FC7\u671F\u5206\u5757\u76EE\u5F55\u5931\u8D25: ${uploadId}`, error))
+    (uploadId) => fsPromises2.rm(path23.join(CHUNK_DIR2, uploadId), { recursive: true, force: true }).catch((error) => console.error(`\u6E05\u7406\u8FC7\u671F\u5206\u5757\u76EE\u5F55\u5931\u8D25: ${uploadId}`, error))
   ));
   await chunkRepository.recoverExpiredCompletions(100);
 };
@@ -18954,7 +19036,7 @@ function decodeFilename2(filename) {
   return filename;
 }
 function safeChunkPath(uploadId, chunkIndex) {
-  return path23.join(path23.resolve(CHUNK_DIR), uploadId, `chunk_${chunkIndex}`);
+  return path23.join(path23.resolve(CHUNK_DIR2), uploadId, `chunk_${chunkIndex}`);
 }
 function getFileType2(mimeType) {
   if (mimeType.startsWith("image/")) return "image";
@@ -19033,7 +19115,7 @@ router6.post("/init", async (req, res) => {
       createdAt: now,
       updatedAt: now
     };
-    uploadDirectory = path23.join(CHUNK_DIR, session.uploadId);
+    uploadDirectory = path23.join(CHUNK_DIR2, session.uploadId);
     await fsPromises2.mkdir(uploadDirectory, { recursive: true });
     await chunkStore.reserve(session);
     res.json({
@@ -19112,7 +19194,7 @@ async function mergeChunks(uploadId, chunks, targetPath, expectedBytes) {
       const expectedDirectory = path23.dirname(path23.resolve(safeChunkPath(uploadId, index)));
       if (chunk.index !== index) throw new Error(`\u5206\u5757 ${index} \u5143\u6570\u636E\u65E0\u6548`);
       const verifiedPath = await verifyChunkIntegrity(chunk, expectedDirectory, MAX_CHUNK_BYTES);
-      await pipeline2(fs17.createReadStream(verifiedPath), output, { end: false });
+      await pipeline3(fs17.createReadStream(verifiedPath), output, { end: false });
     }
     await new Promise((resolve, reject) => {
       output.end(resolve);
@@ -19189,7 +19271,7 @@ router6.post("/complete", async (req, res) => {
     if (duplicate) {
       await fsPromises2.rm(tempMergedPath, { force: true });
       if (!await chunkStore.complete(uploadId, owner, token, duplicate.id)) throw new Error("\u5B8C\u6210\u79DF\u7EA6\u5DF2\u5931\u6548");
-      await fsPromises2.rm(path23.join(CHUNK_DIR, uploadId), { recursive: true, force: true }).catch((error) => console.error("\u6E05\u7406\u5DF2\u5B8C\u6210\u91CD\u590D\u4E0A\u4F20\u7684\u5206\u5757\u5931\u8D25:", error));
+      await fsPromises2.rm(path23.join(CHUNK_DIR2, uploadId), { recursive: true, force: true }).catch((error) => console.error("\u6E05\u7406\u5DF2\u5B8C\u6210\u91CD\u590D\u4E0A\u4F20\u7684\u5206\u5757\u5931\u8D25:", error));
       return res.json({
         success: true,
         skipped: true,
@@ -19296,7 +19378,7 @@ router6.post("/complete", async (req, res) => {
       await compensateAfterCompletionFailure(completionError);
       throw completionError;
     }
-    await fsPromises2.rm(path23.join(CHUNK_DIR, uploadId), { recursive: true, force: true }).catch((error) => console.error("\u6E05\u7406\u5DF2\u5B8C\u6210\u4E0A\u4F20\u7684\u5206\u5757\u5931\u8D25:", error));
+    await fsPromises2.rm(path23.join(CHUNK_DIR2, uploadId), { recursive: true, force: true }).catch((error) => console.error("\u6E05\u7406\u5DF2\u5B8C\u6210\u4E0A\u4F20\u7684\u5206\u5757\u5931\u8D25:", error));
     if (type === "video") {
       const previewSource = target.provider.name === "local" ? storedPath : tempMergedPath;
       void generateMediaPreview(previewSource, storedName, session.mimeType).then(async (preview) => {
@@ -19380,7 +19462,7 @@ router6.delete("/:uploadId", async (req, res) => {
   try {
     const result = await chunkStore.cancel(req.params.uploadId, ownerId(req));
     if (result === "busy") return res.status(409).json({ error: "\u4E0A\u4F20\u6B63\u5728\u5B8C\u6210\uFF0C\u6682\u65F6\u4E0D\u80FD\u53D6\u6D88", status: result });
-    if (result === "cancelled") await fsPromises2.rm(path23.join(CHUNK_DIR, req.params.uploadId), { recursive: true, force: true });
+    if (result === "cancelled") await fsPromises2.rm(path23.join(CHUNK_DIR2, req.params.uploadId), { recursive: true, force: true });
     res.status(result === "not_found" ? 404 : 200).json({ success: result !== "not_found", status: result });
   } catch (error) {
     sendProtocolError(res, error);
@@ -19449,7 +19531,7 @@ async function saveTaskCenterDismissals(items) {
 // src/routes/tasks.ts
 import crypto24 from "node:crypto";
 var router7 = Router7();
-var CHUNK_DIR2 = process.env.CHUNK_DIR || "./data/chunks";
+var CHUNK_DIR3 = process.env.CHUNK_DIR || "./data/chunks";
 function parseJsonObject(value) {
   if (value && typeof value === "object" && !Array.isArray(value)) return value;
   if (typeof value !== "string") return {};
@@ -19755,7 +19837,7 @@ router7.post("/:sourceType/:id/:action", requireAuth, async (req, res) => {
         [id]
       );
       if ((result.rowCount || 0) === 0) return res.status(409).json({ error: "\u4E0A\u4F20\u6B63\u5728\u5B8C\u6210\u6216\u5DF2\u7ED3\u675F\uFF0C\u4E0D\u80FD\u53D6\u6D88" });
-      await fs18.rm(path24.join(CHUNK_DIR2, id), { recursive: true, force: true });
+      await fs18.rm(path24.join(CHUNK_DIR3, id), { recursive: true, force: true });
       return res.json({ success: true });
     }
     return res.status(400).json({ error: "\u8BE5\u4EFB\u52A1\u7C7B\u578B\u6682\u4E0D\u652F\u6301\u63A7\u5236" });
@@ -19936,7 +20018,7 @@ var PORT = process.env.PORT || 51947;
 var UPLOAD_DIR8 = process.env.UPLOAD_DIR || "./data/uploads";
 var THUMBNAIL_DIR7 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
 var PREVIEW_DIR4 = process.env.PREVIEW_DIR || "./data/previews";
-var CHUNK_DIR3 = process.env.CHUNK_DIR || "./data/chunks";
+var CHUNK_DIR4 = process.env.CHUNK_DIR || "./data/chunks";
 if (!fs19.existsSync(UPLOAD_DIR8)) {
   fs19.mkdirSync(UPLOAD_DIR8, { recursive: true });
   console.log(`\u{1F4C1} \u521B\u5EFA\u4E0A\u4F20\u76EE\u5F55: ${UPLOAD_DIR8}`);
@@ -19949,9 +20031,9 @@ if (!fs19.existsSync(PREVIEW_DIR4)) {
   fs19.mkdirSync(PREVIEW_DIR4, { recursive: true });
   console.log(`\u{1F39E}\uFE0F \u521B\u5EFA\u9884\u89C8\u76EE\u5F55: ${PREVIEW_DIR4}`);
 }
-if (!fs19.existsSync(CHUNK_DIR3)) {
-  fs19.mkdirSync(CHUNK_DIR3, { recursive: true });
-  console.log(`\u{1F4C1} \u521B\u5EFA\u5206\u5757\u76EE\u5F55: ${CHUNK_DIR3}`);
+if (!fs19.existsSync(CHUNK_DIR4)) {
+  fs19.mkdirSync(CHUNK_DIR4, { recursive: true });
+  console.log(`\u{1F4C1} \u521B\u5EFA\u5206\u5757\u76EE\u5F55: ${CHUNK_DIR4}`);
 }
 var configuredCorsOrigin = process.env.CORS_ORIGIN || "";
 var allowedOrigins = configuredCorsOrigin.split(",").map((origin) => origin.trim()).filter(Boolean);
