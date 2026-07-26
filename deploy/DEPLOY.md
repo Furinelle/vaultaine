@@ -20,7 +20,7 @@ nano .env
 
 ```dotenv
 DB_PASSWORD=使用 openssl rand -hex 32 生成的随机值
-IMAGE_VERSION=v2.0.1
+IMAGE_VERSION=2.0.1
 BACKEND_IMAGE=ghcr.io/furinelle/tg-vault-backend
 FRONTEND_IMAGE=ghcr.io/furinelle/tg-vault-frontend
 VITE_API_URL=https://api.example.com
@@ -30,6 +30,8 @@ CORS_ORIGIN=https://cloud.example.com
 DOMAIN=cloud.example.com
 COOKIE_SECURE=true
 ```
+
+`IMAGE_VERSION` 填写发布工作流生成的镜像标签：语义化版本标签是去掉 `v` 前缀的版本号（git tag `v2.0.1` 对应镜像标签 `2.0.1`），也可以使用 `sha-<short-commit>` 或 `main` 标签。
 
 可选但建议显式保存：
 
