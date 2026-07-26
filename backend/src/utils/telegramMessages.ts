@@ -198,7 +198,7 @@ export function buildAuthSuccess(): string {
 
 /** /start 未认证的欢迎 + 密码键盘提示 */
 export function buildStartPrompt(): string {
-    return `👋 **欢迎使用 TG Vault Bot！**\n\n🔐 请使用下方键盘输入密码：`;
+    return `👋 **欢迎使用 Vaultaine Bot！**\n\n🔐 请使用下方键盘输入密码：`;
 }
 
 /** /help 帮助文本 */
@@ -214,7 +214,7 @@ export function buildHelp(): string {
         ``,
     ]);
     return [
-        `📖 **TG Vault Bot 帮助**`,
+        `📖 **Vaultaine Bot 帮助**`,
         LINE,
         ``,
         `**📤 文件上传**`,

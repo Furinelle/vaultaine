@@ -1796,6 +1796,7 @@ var init_storage = __esm({
       oauth2Client;
       drive;
       tokenExpiresAt = 0;
+      // 目录名保持 'TG Vault'（项目更名 Vaultaine 前的旧名）：现有部署的 Google Drive 已在该目录存文件，改名会导致新文件写入新目录
       GOOGLE_DRIVE_FOLDER = "TG Vault";
       sharedDriveId;
       folderIdCache = /* @__PURE__ */ new Map();
@@ -2839,7 +2840,7 @@ async function generateOTPAuthUrl(user = "Admin") {
   }
   const otpauth = authenticator.toURI({
     label: user,
-    issuer: "TG Vault",
+    issuer: "Vaultaine",
     secret
   });
   return await QRCode.toDataURL(otpauth);
@@ -3267,7 +3268,7 @@ function buildAuthSuccess() {
   ].join("\n");
 }
 function buildStartPrompt() {
-  return `\u{1F44B} **\u6B22\u8FCE\u4F7F\u7528 TG Vault Bot\uFF01**
+  return `\u{1F44B} **\u6B22\u8FCE\u4F7F\u7528 Vaultaine Bot\uFF01**
 
 \u{1F510} \u8BF7\u4F7F\u7528\u4E0B\u65B9\u952E\u76D8\u8F93\u5165\u5BC6\u7801\uFF1A`;
 }
@@ -3282,7 +3283,7 @@ function buildHelp() {
     ``
   ]);
   return [
-    `\u{1F4D6} **TG Vault Bot \u5E2E\u52A9**`,
+    `\u{1F4D6} **Vaultaine Bot \u5E2E\u52A9**`,
     LINE,
     ``,
     `**\u{1F4E4} \u6587\u4EF6\u4E0A\u4F20**`,
@@ -4040,7 +4041,7 @@ async function initTelegramUserClient() {
     connectionRetries: 15,
     retryDelay: 2e3,
     useWSS: false,
-    deviceModel: "TG Vault User Downloader",
+    deviceModel: "Vaultaine User Downloader",
     systemVersion: "1.0.0",
     appVersion: "1.0.0",
     floodSleepThreshold: 120
@@ -12102,7 +12103,7 @@ function buildCleanupSettingsText(enabled) {
     "\u5F00\u542F\u540E\u4F1A\u81EA\u52A8\u5220\u9664\u672C\u5730 uploads \u4E2D\u672A\u767B\u8BB0\u5230\u6587\u4EF6\u7D22\u5F15\u3001\u4E14\u8D85\u8FC7\u4FDD\u62A4\u671F\u7684\u4E34\u65F6\u6587\u4EF6\u3002",
     "\u8FD9\u4E0D\u4F1A\u5220\u9664\u4EFB\u52A1\u5386\u53F2\u3001\u5DF2\u767B\u8BB0\u6587\u4EF6\u6216\u7B2C\u4E09\u65B9\u4E91\u7AEF\u5B9E\u4F53\u3002",
     "",
-    "\u5982\u679C\u672C\u5730 uploads \u4E2D\u6709\u7ED5\u8FC7 TG Vault \u5199\u5165\u7684\u6587\u4EF6\uFF0C\u8BF7\u4FDD\u6301\u5173\u95ED\uFF0C\u907F\u514D\u5176\u88AB\u8BC6\u522B\u4E3A\u672A\u7D22\u5F15\u4E34\u65F6\u6587\u4EF6\u3002"
+    "\u5982\u679C\u672C\u5730 uploads \u4E2D\u6709\u7ED5\u8FC7 Vaultaine \u5199\u5165\u7684\u6587\u4EF6\uFF0C\u8BF7\u4FDD\u6301\u5173\u95ED\uFF0C\u907F\u514D\u5176\u88AB\u8BC6\u522B\u4E3A\u672A\u7D22\u5F15\u4E34\u65F6\u6587\u4EF6\u3002"
   ].join("\n");
 }
 function getCallbackChatKey(update) {
@@ -14543,7 +14544,7 @@ async function initTelegramBot() {
       connectionRetries: 15,
       retryDelay: 2e3,
       useWSS: false,
-      deviceModel: "TG Vault Bot",
+      deviceModel: "Vaultaine Bot",
       systemVersion: "1.0.0",
       appVersion: "1.0.0",
       floodSleepThreshold: 120
@@ -20461,7 +20462,7 @@ async function startApplication() {
     const telegramEnabled = !!process.env.TELEGRAM_BOT_TOKEN && !!process.env.TELEGRAM_API_ID && !!process.env.TELEGRAM_API_HASH;
     const initialSetupRequired = await isInitialSetupRequired();
     console.log(`
-\u{1F680} TG Vault \u540E\u7AEF\u670D\u52A1\u5DF2\u542F\u52A8
+\u{1F680} Vaultaine \u540E\u7AEF\u670D\u52A1\u5DF2\u542F\u52A8
 \u{1F4CD} \u7AEF\u53E3: ${PORT}
 \u{1F4C1} \u4E0A\u4F20\u76EE\u5F55: ${path25.resolve(UPLOAD_DIR8)}
 \u{1F5BC}\uFE0F  \u7F29\u7565\u56FE\u76EE\u5F55: ${path25.resolve(THUMBNAIL_DIR7)}

@@ -111,7 +111,7 @@ jobs:
         id: meta-backend
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: ghcr.io/furinelle/tg-vault-backend
+          images: ghcr.io/furinelle/vaultaine-backend
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -130,7 +130,7 @@ jobs:
         with:
           context: ./backend
           push: false
-          tags: tg-vault-backend:ci-${{ github.sha }}
+          tags: vaultaine-backend:ci-${{ github.sha }}
           build-args: |
             SOURCE_REVISION=${{ github.sha }}
             SOURCE_VERSION=ci-${{ github.sha }}
@@ -180,7 +180,7 @@ jobs:
         id: meta-frontend
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: ghcr.io/furinelle/tg-vault-frontend
+          images: ghcr.io/furinelle/vaultaine-frontend
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -199,7 +199,7 @@ jobs:
         with:
           context: ./frontend
           push: false
-          tags: tg-vault-frontend:ci-${{ github.sha }}
+          tags: vaultaine-frontend:ci-${{ github.sha }}
           build-args: |
             VITE_API_URL=${{ vars.VITE_API_URL }}
             SOURCE_REVISION=${{ github.sha }}

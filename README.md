@@ -1,19 +1,19 @@
 <p align="center">
-  <img src="backend/logo.png" alt="TG Vault Logo" width="150" />
+  <img src="backend/logo.png" alt="Vaultaine Logo" width="150" />
 </p>
 
-<h1 align="center">TG Vault</h1>
+<h1 align="center">Vaultaine</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/github/license/hicocos/tg-vault?style=flat-square&color=blue" alt="License" />
-  <img src="https://img.shields.io/github/stars/hicocos/tg-vault?style=flat-square&color=gold" alt="Stars" />
-  <img src="https://img.shields.io/github/forks/hicocos/tg-vault?style=flat-square&color=lightgrey" alt="Forks" />
-  <img src="https://img.shields.io/github/issues/hicocos/tg-vault?style=flat-square&color=red" alt="Issues" />
+  <img src="https://img.shields.io/github/license/Furinelle/vaultaine?style=flat-square&color=blue" alt="License" />
+  <img src="https://img.shields.io/github/stars/Furinelle/vaultaine?style=flat-square&color=gold" alt="Stars" />
+  <img src="https://img.shields.io/github/forks/Furinelle/vaultaine?style=flat-square&color=lightgrey" alt="Forks" />
+  <img src="https://img.shields.io/github/issues/Furinelle/vaultaine?style=flat-square&color=red" alt="Issues" />
   <img src="https://img.shields.io/badge/Docker-Compose-blue?style=flat-square" alt="Docker Compose" />
 </p>
 
 <p align="center">
-  <strong>TG Vault</strong> 是面向个人和小团队的 Telegram 转存与私有云存储系统。它提供 Web 文件管理、Telegram Bot 上传、yt-dlp 链接下载、频道/群组媒体转存、订阅同步、自动归档和多存储源接入。
+  <strong>Vaultaine</strong> 是面向个人和小团队的 Telegram 转存与私有云存储系统。它提供 Web 文件管理、Telegram Bot 上传、yt-dlp 链接下载、频道/群组媒体转存、订阅同步、自动归档和多存储源接入。
 </p>
 
 ---
@@ -38,8 +38,8 @@
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/Furinelle/furina-vault.git
-cd furina-vault
+git clone https://github.com/Furinelle/vaultaine.git
+cd vaultaine
 ```
 
 ### 2. 配置环境变量
@@ -66,14 +66,14 @@ set +a
 
 docker build \
   --build-arg VITE_API_URL="${VITE_API_URL}" \
-  -t tg-vault-frontend:latest \
+  -t vaultaine-frontend:latest \
   ./frontend
 ```
 
 ### 4. 构建后端
 
 ```bash
-docker build -t tg-vault-backend:latest ./backend
+docker build -t vaultaine-backend:latest ./backend
 ```
 
 ### 5. 生成用户账号 session（可选）
@@ -184,7 +184,7 @@ docker compose up -d
 
 ### Telegram Bot 允许用户
 
-TG Vault 会限制能通过 Bot PIN 登录的 Telegram 用户。推荐在 `.env` 中填写：
+Vaultaine 会限制能通过 Bot PIN 登录的 Telegram 用户。推荐在 `.env` 中填写：
 
 ```env
 TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
@@ -206,7 +206,7 @@ TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
 
 ### Telegram 文件与分片并发调参
 
-TG Vault 有两层 Telegram 下载并发：
+Vaultaine 有两层 Telegram 下载并发：
 
 | 命令 / 配置 | 控制什么 | 可选值 |
 | :--- | :--- | :--- |
@@ -297,7 +297,7 @@ TG Vault 有两层 Telegram 下载并发：
 
 ## 🔐 安全与访问控制
 
-TG Vault 默认采用“首次初始化”模式保护 Web 和 API：
+Vaultaine 默认采用“首次初始化”模式保护 Web 和 API：
 
 1. 服务启动后，首次访问 Web 页面会要求创建：
    - 网页管理员密码：至少 8 位，使用 `scrypt` 加盐哈希后保存到数据库。
@@ -310,13 +310,13 @@ TG Vault 默认采用“首次初始化”模式保护 Web 和 API：
 
 ### 自动密钥说明
 
-TG Vault 会在首次启动时自动生成内部密钥，并保存到 Docker 数据卷的 `/data/secrets/` 目录中。正常部署无需手动配置。迁移服务器时请连同 Docker volume 一起备份，否则登录会话、TOTP 密钥和已加密的第三方存储凭证可能需要重新配置。
+Vaultaine 会在首次启动时自动生成内部密钥，并保存到 Docker 数据卷的 `/data/secrets/` 目录中。正常部署无需手动配置。迁移服务器时请连同 Docker volume 一起备份，否则登录会话、TOTP 密钥和已加密的第三方存储凭证可能需要重新配置。
 
 完整的宿主机 Nginx 部署、健康检查、协调备份与隔离恢复校验流程见 [`deploy/DEPLOY.md`](deploy/DEPLOY.md)。仓库提供 `deploy/backup.sh` 和只读归档检查脚本 `deploy/restore-verify.sh`；备份包含密钥材料，必须加密并异地保存。
 
 ### 双重验证 (TOTP)
 
-TG Vault 内置支持 TOTP 双重验证（如 Google Authenticator）：
+Vaultaine 内置支持 TOTP 双重验证（如 Google Authenticator）：
 
 - Web 端：在个人设置中扫码激活
 - Telegram Bot：发送 `/setup_2fa` 获取设置二维码，并在对话框输入验证码激活
@@ -381,7 +381,7 @@ docker system prune -f
 ## 📂 项目结构
 
 ```text
-TG Vault/
+Vaultaine/
 ├── frontend/           # React 网页前端
 ├── backend/            # Node.js API 与 Telegram 服务
 ├── init.sql            # 数据库初始化脚本
@@ -398,4 +398,4 @@ TG Vault/
 
 ---
 
-[![Star History Chart](https://api.star-history.com/svg?repos=hicocos/tg-vault&type=date&legend=top-left)](https://www.star-history.com/#hicocos/tg-vault&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=Furinelle/vaultaine&type=date&legend=top-left)](https://www.star-history.com/#Furinelle/vaultaine&type=date&legend=top-left)

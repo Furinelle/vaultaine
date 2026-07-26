@@ -451,7 +451,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, activeSection, onSecti
             const busyCount = impact.activeLeaseCount + impact.activeTaskCount + impact.activeUploadCount;
             const impactText = [
                 `账户：${accountName}`,
-                `将删除 TG Vault 索引：${impact.fileCount} 条`,
+                `将删除 Vaultaine 索引：${impact.fileCount} 条`,
                 `索引容量：${(impact.totalSizeBytes / 1024 / 1024).toFixed(2)} MiB`,
                 `涉及目录：${impact.folderCount} 个`,
                 `活动租约/任务/上传：${impact.activeLeaseCount}/${impact.activeTaskCount}/${impact.activeUploadCount}`,
@@ -555,7 +555,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, activeSection, onSecti
     const [importProgress, setImportProgress] = useState<BucketImportTask | null>(null);
     const handleImportFromBucket = async () => {
         const confirmed = await requestConfirmation(
-            '扫描当前 S3 存储桶，将桶内还未在 TG Vault 登记的文件导入到文件列表（自动跳过 _backups/ 备份目录）。导入在后台运行，可随时查看进度。继续吗？',
+            '扫描当前 S3 存储桶，将桶内还未在 Vaultaine 登记的文件导入到文件列表（自动跳过 _backups/ 备份目录）。导入在后台运行，可随时查看进度。继续吗？',
             '从存储桶导入',
         );
         if (!confirmed) return;
@@ -1187,7 +1187,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, activeSection, onSecti
                     <p className="text-xs text-muted-foreground">
                         首次配置？请参阅{" "}
                         <a
-                            href="https://github.com/hicocos/tg-vault#%EF%B8%8F-%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F%E9%85%8D%E7%BD%AE"
+                            href="https://github.com/Furinelle/vaultaine#%EF%B8%8F-%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F%E9%85%8D%E7%BD%AE"
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1 text-blue-500 hover:text-blue-600 font-medium hover:underline"
@@ -2218,7 +2218,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, activeSection, onSecti
                             {/* 分隔线 */}
                             <div className="border-t border-border/50" />
 
-                            {/* TG Vault 使用量 */}
+                            {/* Vaultaine 使用量 */}
                             <div className="space-y-3">
                                 <div className="flex items-center">
                                     <div className="flex items-center gap-3">
@@ -2226,7 +2226,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, activeSection, onSecti
                                             <Cloud className="h-5 w-5" />
                                         </div>
                                         <div>
-                                            <p className="text-sm font-medium">TG Vault 存储</p>
+                                            <p className="text-sm font-medium">Vaultaine 存储</p>
                                             <div className="flex items-baseline gap-1">
                                                 <span className="text-2xl font-bold tracking-tight">{storageStats.tgvault.used}</span>
                                                 <span className="text-sm text-muted-foreground font-medium">

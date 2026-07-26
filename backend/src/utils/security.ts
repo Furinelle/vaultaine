@@ -142,7 +142,7 @@ export async function generateOTPAuthUrl(user: string = 'Admin'): Promise<string
 
     const otpauth = authenticator.toURI({
         label: user,
-        issuer: 'TG Vault',
+        issuer: 'Vaultaine',
         secret: secret
     });
 

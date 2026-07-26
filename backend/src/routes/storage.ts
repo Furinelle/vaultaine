@@ -749,7 +749,7 @@ router.delete('/accounts/:id', requireAuth, async (req: Request, res: Response) 
     }
 });
 
-// 从当前活跃的 S3 存储桶导入未入库的文件（绕过 TG Vault 直传到桶里的文件借此补建索引）。
+// 从当前活跃的 S3 存储桶导入未入库的文件（绕过 Vaultaine 直传到桶里的文件借此补建索引）。
 // 大桶全量扫描远超请求超时，端点只负责加锁并启动后台任务，进度通过任务查询端点轮询。
 router.post('/import-from-bucket', requireAuth, async (_req: Request, res: Response) => {
     let client: PoolClient | null = null;

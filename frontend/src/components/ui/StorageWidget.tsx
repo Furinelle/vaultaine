@@ -37,10 +37,10 @@ export const StorageWidget = ({ stats, used, total }: StorageWidgetProps) => {
                     </p>
                 </div>
 
-                {/* TG Vault Usage */}
+                {/* Vaultaine Usage */}
                 <div>
                     <div className="flex items-center justify-between mb-1.5">
-                        <h4 className="text-xs font-medium text-muted-foreground">TG Vault</h4>
+                        <h4 className="text-xs font-medium text-muted-foreground">Vaultaine</h4>
                         <span className="text-xs text-muted-foreground">{stats.tgvault.fileCount} 文件</span>
                     </div>
                     <p className="mt-1 text-[10px] text-muted-foreground">

@@ -27,13 +27,14 @@
 
 ### 变更
 
+- **项目更名为 Vaultaine**（原 TG Vault / furina-vault）。改动覆盖界面文案、Bot 消息、TOTP 发行方名称（仅影响新扫码的验证器条目）、Telegram 会话设备名、README/部署文档、`package.json`、默认镜像名（`vaultaine-frontend` / `vaultaine-backend`）与 GHCR 发布目标（`ghcr.io/furinelle/vaultaine-*`）。为兼容现有部署，以下标识**保持不变**：Compose 项目名 `tg-vault`（决定数据卷命名空间）、数据库名/用户 `tgvault`、登录 Cookie `tg_vault_token`、`TG_VAULT_SECRET_DIR` 环境变量、PG 咨询锁 key、分块上传设备哈希种子，以及 Google Drive 存储目录名 `TG Vault`。服务器若在 `.env` 中显式设置了 `BACKEND_IMAGE` / `FRONTEND_IMAGE`，需自行更新为新镜像名。升级注意：容器名与网络名改动会使 `docker compose up -d` 重建包括 postgres 在内的全部容器（数据卷不受影响，会有短暂停机）；宿主机上按旧容器名（`tg-vault-postgres` 等）写死的 cron/监控脚本需同步改名；走 GHCR 拉取升级的部署，首个 `vaultaine-*` 包发布后需在 GitHub Packages 手动设为 public。
 - 前端 API 层约 44 处重复的响应错误处理收敛为共享守卫模块，`UNAUTHORIZED` 哨兵收敛为导出常量；分块上传的 SHA-256 计算增加串行门，峰值内存从约 4 倍分块大小收敛为单分块。
 - 存储桶导入失败时向用户展示友好提示并在会话过期时走统一登出路径，不再显示内部错误码。
 
 ### 新增
 
 - 云存储凭据加解密路径（credentialCrypto/secretStore）补齐 21 个行为测试，覆盖密文篡改、密钥轮换与持久化恢复语义；`fileScope` 的 SQL 参数重编号修复补充行为回归测试。
-- CI 发布流水线将后端与前端镜像发布到 GHCR（`ghcr.io/furinelle/tg-vault-backend` / `tg-vault-frontend`），部署文档新增按不可变标签拉取镜像的流程。
+- CI 发布流水线将后端与前端镜像发布到 GHCR（`ghcr.io/furinelle/vaultaine-backend` / `vaultaine-frontend`），部署文档新增按不可变标签拉取镜像的流程。
 
 ## [2.0.1] - 2026-07-23
 

@@ -451,7 +451,7 @@ function buildCleanupSettingsText(enabled: boolean): string {
         '开启后会自动删除本地 uploads 中未登记到文件索引、且超过保护期的临时文件。',
         '这不会删除任务历史、已登记文件或第三方云端实体。',
         '',
-        '如果本地 uploads 中有绕过 TG Vault 写入的文件，请保持关闭，避免其被识别为未索引临时文件。',
+        '如果本地 uploads 中有绕过 Vaultaine 写入的文件，请保持关闭，避免其被识别为未索引临时文件。',
     ].join('\n');
 }
 

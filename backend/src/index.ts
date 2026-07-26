@@ -205,7 +205,7 @@ async function startApplication(): Promise<void> {
         const telegramEnabled = !!process.env.TELEGRAM_BOT_TOKEN && !!process.env.TELEGRAM_API_ID && !!process.env.TELEGRAM_API_HASH;
         const initialSetupRequired = await isInitialSetupRequired();
         console.log(`
-🚀 TG Vault 后端服务已启动
+🚀 Vaultaine 后端服务已启动
 📍 端口: ${PORT}
 📁 上传目录: ${path.resolve(UPLOAD_DIR)}
 🖼️  缩略图目录: ${path.resolve(THUMBNAIL_DIR)}

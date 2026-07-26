@@ -1113,6 +1113,7 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
     private oauth2Client: any;
     private drive: any;
     private tokenExpiresAt: number = 0;
+    // 目录名保持 'TG Vault'（项目更名 Vaultaine 前的旧名）：现有部署的 Google Drive 已在该目录存文件，改名会导致新文件写入新目录
     private readonly GOOGLE_DRIVE_FOLDER = 'TG Vault';
     private readonly sharedDriveId?: string;
     private folderIdCache = new Map<string, string>();

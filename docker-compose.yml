@@ -1,9 +1,11 @@
+# Compose 项目名保持 tg-vault：数据卷 tg-vault_file-storage / tg-vault_postgres-data 的
+# 命名空间由它决定，改名会让现有部署挂到全新的空卷上。
 name: tg-vault
 
 services:
   # 前端（暴露到宿主机供 Nginx 反代）
   frontend:
-    image: ${FRONTEND_IMAGE:-tg-vault-frontend}:${IMAGE_VERSION:?IMAGE_VERSION is required}
+    image: ${FRONTEND_IMAGE:-vaultaine-frontend}:${IMAGE_VERSION:?IMAGE_VERSION is required}
     build:
       context: ./frontend
       sbom: true
@@ -12,11 +14,11 @@ services:
         - VITE_API_URL=${VITE_API_URL:-https://api.example.com}
         - SOURCE_REVISION=${SOURCE_REVISION:-unknown}
         - SOURCE_VERSION=${SOURCE_VERSION:-worktree}
-    container_name: tg-vault-frontend
+    container_name: vaultaine-frontend
     ports:
       - "127.0.0.1:47832:80"
     networks:
-      - tg-vault-network
+      - vaultaine-network
     depends_on:
       backend:
         condition: service_healthy
@@ -35,7 +37,7 @@ services:
 
   # 后端（暴露到宿主机供 Nginx 反代）
   backend:
-    image: ${BACKEND_IMAGE:-tg-vault-backend}:${IMAGE_VERSION:?IMAGE_VERSION is required}
+    image: ${BACKEND_IMAGE:-vaultaine-backend}:${IMAGE_VERSION:?IMAGE_VERSION is required}
     build:
       context: ./backend
       sbom: true
@@ -43,7 +45,7 @@ services:
       args:
         - SOURCE_REVISION=${SOURCE_REVISION:-unknown}
         - SOURCE_VERSION=${SOURCE_VERSION:-worktree}
-    container_name: tg-vault-backend
+    container_name: vaultaine-backend
     ports:
       - "127.0.0.1:${PORT:-51947}:${PORT:-51947}"
     depends_on:
@@ -129,7 +131,7 @@ services:
     volumes:
       - file-storage:/data
     networks:
-      - tg-vault-network
+      - vaultaine-network
     restart: unless-stopped
     stop_grace_period: 35s
     healthcheck:
@@ -147,7 +149,7 @@ services:
   # 数据库
   postgres:
     image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
-    container_name: tg-vault-postgres
+    container_name: vaultaine-postgres
     environment:
       - POSTGRES_DB=tgvault
       - POSTGRES_USER=tgvault
@@ -156,7 +158,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
-      - tg-vault-network
+      - vaultaine-network
     restart: unless-stopped
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U tgvault -d tgvault" ]
@@ -177,5 +179,5 @@ volumes:
     driver: local
 
 networks:
-  tg-vault-network:
+  vaultaine-network:
     driver: bridge

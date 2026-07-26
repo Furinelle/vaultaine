@@ -1,6 +1,6 @@
-# TG Vault 服务器部署指南
+# Vaultaine 服务器部署指南
 
-TG Vault 当前采用 **Docker Compose + 宿主机 Nginx/面板反向代理**。Compose 只包含 `postgres`、`backend`、`frontend`，不包含 Nginx 或 Certbot 服务。
+Vaultaine 当前采用 **Docker Compose + 宿主机 Nginx/面板反向代理**。Compose 只包含 `postgres`、`backend`、`frontend`，不包含 Nginx 或 Certbot 服务。
 
 ## 1. 前置条件
 
@@ -21,8 +21,8 @@ nano .env
 ```dotenv
 DB_PASSWORD=使用 openssl rand -hex 32 生成的随机值
 IMAGE_VERSION=2.0.1
-BACKEND_IMAGE=ghcr.io/furinelle/tg-vault-backend
-FRONTEND_IMAGE=ghcr.io/furinelle/tg-vault-frontend
+BACKEND_IMAGE=ghcr.io/furinelle/vaultaine-backend
+FRONTEND_IMAGE=ghcr.io/furinelle/vaultaine-frontend
 VITE_API_URL=https://api.example.com
 OAUTH_CALLBACK_BASE_URL=https://api.example.com
 OAUTH_FRONTEND_ORIGIN=https://cloud.example.com

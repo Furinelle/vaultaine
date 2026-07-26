@@ -30,12 +30,12 @@ export const StorageStats = ({ stats, compact = false }: StorageStatsProps) => {
                     </p>
                 </div>
 
-                {/* TG Vault Usage */}
+                {/* Vaultaine Usage */}
                 <div className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
                         <span className="text-muted-foreground flex items-center gap-1.5">
                             <FileStack className="h-3.5 w-3.5" />
-                            TG Vault
+                            Vaultaine
                         </span>
                         <span className="font-medium">{stats.tgvault.fileCount} 个文件</span>
                     </div>
@@ -71,10 +71,10 @@ export const StorageStats = ({ stats, compact = false }: StorageStatsProps) => {
                 </div>
             </div>
 
-            {/* TG Vault Usage */}
+            {/* Vaultaine Usage */}
             <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">TG Vault 使用</span>
+                    <span className="text-muted-foreground">Vaultaine 使用</span>
                     <span className="font-medium">{stats.tgvault.used}</span>
                 </div>
                 <p className="text-xs text-muted-foreground">

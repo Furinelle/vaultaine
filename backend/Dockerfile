@@ -19,7 +19,7 @@ FROM node@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f60937229
 
 ARG SOURCE_REVISION=unknown
 ARG SOURCE_VERSION=worktree
-ARG SOURCE_URL=https://github.com/hicocos/tg-vault
+ARG SOURCE_URL=https://github.com/Furinelle/vaultaine
 LABEL org.opencontainers.image.revision=$SOURCE_REVISION \
       org.opencontainers.image.version=$SOURCE_VERSION \
       org.opencontainers.image.source=$SOURCE_URL

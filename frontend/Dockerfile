@@ -22,7 +22,7 @@ FROM nginx@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c17
 
 ARG SOURCE_REVISION=unknown
 ARG SOURCE_VERSION=worktree
-ARG SOURCE_URL=https://github.com/hicocos/tg-vault
+ARG SOURCE_URL=https://github.com/Furinelle/vaultaine
 LABEL org.opencontainers.image.revision=$SOURCE_REVISION \
       org.opencontainers.image.version=$SOURCE_VERSION \
       org.opencontainers.image.source=$SOURCE_URL
