@@ -38,8 +38,8 @@
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/hicocos/tg-vault.git
-cd tg-vault
+git clone https://github.com/Furinelle/furina-vault.git
+cd furina-vault
 ```
 
 ### 2. 配置环境变量
@@ -116,6 +116,7 @@ docker compose up -d
 | `TELEGRAM_API_ID` | 启用 Bot 或账号级下载器 | 从 [my.telegram.org](https://my.telegram.org) 获取；Bot 与账号级下载器共用 |
 | `TELEGRAM_API_HASH` | 启用 Bot 或账号级下载器 | 与 `TELEGRAM_API_ID` 同页获取；Bot 与账号级下载器共用这一组 API 配置 |
 | `TELEGRAM_ALLOWED_USER_IDS` | 建议，限制谁可以通过 Bot PIN 登录 | Telegram 数字 user id，多个用英文逗号分隔；可让用户私聊 `@userinfobot` 查看 Id |
+| `TELEGRAM_AUTO_ALLOW_FIRST_USER` | 可选，允许列表为空时的首用户引导 | 默认 `false`；设为 `true` 时，首个输对 PIN 的用户会被自动加入允许列表（存在抢注风险，仅建议临时开启） |
 | `TELEGRAM_USER_SESSION_FILE` | 可选，启用账号级下载器 | 默认 `/data/telegram_user_session.txt`；运行登录脚本生成 |
 | `TELEGRAM_DOWNLOAD_WORKERS` | 可选，调单文件分片并发 | 默认 `4`，建议 `4` 或 `8`；`12/16` 更激进，可能触发限流 |
 | `TELEGRAM_FILE_DOWNLOAD_CONCURRENCY` | 可选，调一次同时下载几个文件 | 默认 `2`，可在 Bot 里用 `/file_concurrency` 设置 `1/2/3/4`；选择 `4` 需要二次确认 |
@@ -139,6 +140,8 @@ docker compose up -d
 | 变量名 | 默认值 | 说明 |
 | :--- | :--- | :--- |
 | `TELEGRAM_RATE_WINDOW_MS` / `TELEGRAM_RATE_MAX` | `60000` / `30` | Bot 普通消息限流：默认每分钟 30 次 |
+| `TELEGRAM_PIN_FAIL_WINDOW_MS` / `TELEGRAM_PIN_FAIL_MAX` | `900000` / `5` | 单用户 PIN 连续失败锁定：默认 15 分钟内 5 次 |
+| `TELEGRAM_PIN_GLOBAL_FAIL_MAX` / `TELEGRAM_PIN_GLOBAL_LOCK_MS` | `20` / `900000` | 跨用户全局 PIN 失败锁定，防止换号分布式爆破：默认 15 分钟内 20 次后全局锁定 15 分钟 |
 | `TELEGRAM_HEAVY_RATE_WINDOW_MS` / `TELEGRAM_HEAVY_RATE_MAX` | `600000` / `5` | Bot 重型命令限流：默认每 10 分钟 5 次 |
 | `TRUST_PROXY` | `loopback` | Express 反代信任范围；本机 Nginx/Caddy 反代推荐保持默认 |
 | `COOKIE_SECURE` | `true` | 登录 Cookie 仅通过 HTTPS 发送；本地 HTTP 调试可临时设为 `false` |
@@ -187,7 +190,10 @@ TG Vault 会限制能通过 Bot PIN 登录的 Telegram 用户。推荐在 `.env`
 TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
 ```
 
-获取 user id：让用户在 Telegram 私聊 `@userinfobot` 查看 `Id`。如果部署时留空，系统会在“还没有任何 Telegram 用户认证成功”时，把第一个正确输入 Bot PIN 的用户自动加入后台允许列表；之后可以在 Web 后台的 **设置 → Telegram Bot 设置** 中动态维护允许列表。
+获取 user id：让用户在 Telegram 私聊 `@userinfobot` 查看 `Id`。允许列表也可以在 Web 后台的 **设置 → Telegram Bot 设置** 中动态维护。
+
+> [!IMPORTANT]
+> 允许列表为空时，Bot 默认**拒绝**所有用户认证（日志中会提示如何放行）。如果希望沿用旧版行为——首个正确输入 PIN 的用户自动加入允许列表——需显式设置 `TELEGRAM_AUTO_ALLOW_FIRST_USER=true`。该行为存在部署完成到管理员首次认证之间被抢注的风险，建议优先预填 `TELEGRAM_ALLOWED_USER_IDS`。
 
 ### 账号级下载器什么时候需要？
 
@@ -284,6 +290,8 @@ TG Vault 有两层 Telegram 下载并发：
 ```
 
 限制：仅支持单个链接；需要先通过 `/start` 验证身份；链接必须以 `http://` 或 `https://` 开头。
+
+安全说明：服务器端下载强制经过内置的 SSRF 出口过滤代理，仅允许访问公网地址——重定向或 DNS 解析指向内网、回环或云元数据地址的请求会被拦截。
 
 ---
 
