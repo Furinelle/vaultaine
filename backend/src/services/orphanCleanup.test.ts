@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { getAllFiles, isReservedTransientUploadPath } from './orphanCleanup.js';
+import { cleanupOrphanChunkDirectories, getAllFiles, isReservedTransientUploadPath } from './orphanCleanup.js';
 
 test('orphan cleanup excludes the yt-dlp workspace while still allowing adjacent orphan cleanup', () => {
     const uploadDir = path.resolve('/srv/tg-vault/uploads');
@@ -55,6 +55,92 @@ test('orphan enumeration fails safe when the configured yt-dlp workspace equals 
     try {
         assert.deepEqual(getAllFiles(root, [], [root]), []);
         assert.equal(fs.existsSync(activeFile), true);
+    } finally {
+        await fs.promises.rm(root, { recursive: true, force: true });
+    }
+});
+
+test('orphan chunk directory cleanup removes only stale sessionless directories', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tg-vault-chunk-orphan-'));
+    const chunkDir = path.join(root, 'chunks');
+    const uploadDir = path.join(root, 'uploads');
+    const staleDir = path.join(chunkDir, 'stale-upload');
+    const activeDir = path.join(chunkDir, 'active-upload');
+    const freshDir = path.join(chunkDir, 'fresh-upload');
+    await fs.promises.mkdir(uploadDir, { recursive: true });
+    for (const dir of [staleDir, activeDir, freshDir]) {
+        await fs.promises.mkdir(dir, { recursive: true });
+        await fs.promises.writeFile(path.join(dir, 'chunk_0'), 'data');
+    }
+    const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await fs.promises.utimes(staleDir, staleTime, staleTime);
+    await fs.promises.utimes(activeDir, staleTime, staleTime);
+
+    try {
+        const removed = await cleanupOrphanChunkDirectories({
+            chunkDir,
+            uploadDir,
+            minAgeMs: 24 * 60 * 60 * 1000,
+            listActiveUploadIds: async () => new Set(['active-upload']),
+        });
+        assert.deepEqual(removed, ['stale-upload']);
+        assert.equal(fs.existsSync(staleDir), false);
+        assert.equal(fs.existsSync(activeDir), true);
+        assert.equal(fs.existsSync(freshDir), true);
+    } finally {
+        await fs.promises.rm(root, { recursive: true, force: true });
+    }
+});
+
+test('orphan chunk directory cleanup fails safe when the chunk dir overlaps the upload root', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tg-vault-chunk-overlap-'));
+    const staleDir = path.join(root, 'stale-upload');
+    await fs.promises.mkdir(staleDir, { recursive: true });
+    const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await fs.promises.utimes(staleDir, staleTime, staleTime);
+
+    try {
+        for (const uploadDir of [root, path.join(root, 'stale-upload')]) {
+            const removed = await cleanupOrphanChunkDirectories({
+                chunkDir: root,
+                uploadDir,
+                minAgeMs: 0,
+                listActiveUploadIds: async () => new Set<string>(),
+            });
+            assert.deepEqual(removed, []);
+        }
+        assert.equal(fs.existsSync(staleDir), true);
+    } finally {
+        await fs.promises.rm(root, { recursive: true, force: true });
+    }
+});
+
+test('orphan chunk directory cleanup skips symlinked entries', async (t) => {
+    if (process.platform === 'win32') return t.skip('symbolic-link permissions vary on Windows');
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tg-vault-chunk-link-'));
+    const chunkDir = path.join(root, 'chunks');
+    const uploadDir = path.join(root, 'uploads');
+    const outsideDir = path.join(root, 'outside');
+    const outsideFile = path.join(outsideDir, 'keep.bin');
+    const alias = path.join(chunkDir, 'alias-upload');
+    await fs.promises.mkdir(chunkDir, { recursive: true });
+    await fs.promises.mkdir(uploadDir, { recursive: true });
+    await fs.promises.mkdir(outsideDir, { recursive: true });
+    await fs.promises.writeFile(outsideFile, 'keep');
+    await fs.promises.symlink(outsideDir, alias, 'dir');
+    const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await fs.promises.lutimes(alias, staleTime, staleTime);
+
+    try {
+        const removed = await cleanupOrphanChunkDirectories({
+            chunkDir,
+            uploadDir,
+            minAgeMs: 0,
+            listActiveUploadIds: async () => new Set<string>(),
+        });
+        assert.deepEqual(removed, []);
+        assert.equal(fs.existsSync(outsideFile), true);
+        assert.equal(fs.existsSync(alias), true);
     } finally {
         await fs.promises.rm(root, { recursive: true, force: true });
     }

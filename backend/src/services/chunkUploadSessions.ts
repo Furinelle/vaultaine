@@ -80,6 +80,32 @@ export class ChunkUploadProtocolError extends Error {
     }
 }
 
+const CHUNK_LOCK_STALE_MS = 10 * 60 * 1000;
+
+async function openChunkLock(lockPath: string): Promise<fsPromises.FileHandle> {
+    try {
+        return await fsPromises.open(lockPath, 'wx');
+    } catch (error: any) {
+        if (error?.code !== 'EEXIST') throw error;
+    }
+    try {
+        const lockStat = await fsPromises.stat(lockPath);
+        if (Date.now() - lockStat.mtimeMs < CHUNK_LOCK_STALE_MS) {
+            throw new ChunkUploadProtocolError('ChunkWriteBusyError', '同一分块正在写入，请稍后重试');
+        }
+        await fsPromises.rm(lockPath, { force: true });
+    } catch (error: any) {
+        if (error instanceof ChunkUploadProtocolError) throw error;
+        if (error?.code !== 'ENOENT') throw error;
+    }
+    try {
+        return await fsPromises.open(lockPath, 'wx');
+    } catch (error: any) {
+        if (error?.code === 'EEXIST') throw new ChunkUploadProtocolError('ChunkWriteBusyError', '同一分块正在写入，请稍后重试');
+        throw error;
+    }
+}
+
 export async function writeChunkAtomically(input: {
     stream: Readable;
     finalPath: string;
@@ -91,13 +117,7 @@ export async function writeChunkAtomically(input: {
     const committedPath = `${input.finalPath}.${crypto.randomUUID()}.chunk`;
     const temporaryPath = `${committedPath}.part`;
     const lockPath = `${input.finalPath}.lock`;
-    let lockHandle: fsPromises.FileHandle;
-    try {
-        lockHandle = await fsPromises.open(lockPath, 'wx');
-    } catch (error: any) {
-        if (error?.code === 'EEXIST') throw new ChunkUploadProtocolError('ChunkWriteBusyError', '同一分块正在写入，请稍后重试');
-        throw error;
-    }
+    const lockHandle = await openChunkLock(lockPath);
     const hash = crypto.createHash('sha256');
     let size = 0;
     const counter = new (await import('node:stream')).Transform({

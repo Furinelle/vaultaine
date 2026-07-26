@@ -14,6 +14,9 @@ const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
 const THUMBNAIL_DIR = path.resolve(process.env.THUMBNAIL_DIR || './data/thumbnails');
 const YTDLP_WORK_DIR = path.resolve(process.env.YTDLP_WORK_DIR || path.join(UPLOAD_DIR, 'ytdlp'));
 const ORPHAN_MIN_AGE_MS = Math.max(60_000, parseInt(process.env.ORPHAN_CLEANUP_MIN_AGE_MS || '600000', 10) || 600_000);
+const CHUNK_DIR = path.resolve(process.env.CHUNK_DIR || './data/chunks');
+const CHUNK_SESSION_TTL_MS = Math.max(60 * 60 * 1000, parseInt(process.env.CHUNK_SESSION_TTL_MS || String(24 * 60 * 60 * 1000), 10) || 24 * 60 * 60 * 1000);
+const CHUNK_ORPHAN_MIN_AGE_MS = Math.max(CHUNK_SESSION_TTL_MS, ORPHAN_MIN_AGE_MS);
 
 export function isReservedTransientUploadPath(filePath: string, reservedDirs: string[] = [YTDLP_WORK_DIR]): boolean {
     const resolvedPath = path.resolve(filePath);
@@ -120,6 +123,56 @@ function removeEmptyDirectories(dirPath: string): void {
     }
 }
 
+async function listChunkSessionUploadIds(): Promise<Set<string>> {
+    const result = await query(`SELECT upload_id FROM chunk_upload_sessions`);
+    return new Set<string>(result.rows.map((row: { upload_id: unknown }) => String(row.upload_id)));
+}
+
+/**
+ * 清理无主分块目录
+ * 扫描 CHUNK_DIR 顶层目录，删除没有对应 chunk_upload_sessions 记录且超过宽限期的目录
+ */
+export async function cleanupOrphanChunkDirectories(options: {
+    chunkDir?: string;
+    uploadDir?: string;
+    minAgeMs?: number;
+    listActiveUploadIds?: () => Promise<Set<string>>;
+} = {}): Promise<string[]> {
+    const chunkDir = path.resolve(options.chunkDir ?? CHUNK_DIR);
+    const uploadDir = path.resolve(options.uploadDir ?? UPLOAD_DIR);
+    const minAgeMs = options.minAgeMs ?? CHUNK_ORPHAN_MIN_AGE_MS;
+    const removed: string[] = [];
+    if (chunkDir === uploadDir
+        || chunkDir.startsWith(`${uploadDir}${path.sep}`)
+        || uploadDir.startsWith(`${chunkDir}${path.sep}`)) {
+        return removed;
+    }
+    let entries: string[];
+    try {
+        entries = await fs.promises.readdir(chunkDir);
+    } catch (error: any) {
+        if (error?.code === 'ENOENT') return removed;
+        throw error;
+    }
+    if (entries.length === 0) return removed;
+    const activeUploadIds = await (options.listActiveUploadIds ?? listChunkSessionUploadIds)();
+    for (const name of entries) {
+        if (activeUploadIds.has(name)) continue;
+        const target = path.join(chunkDir, name);
+        try {
+            const stat = await fs.promises.lstat(target);
+            if (!stat.isDirectory()) continue;
+            if (Date.now() - stat.mtimeMs < minAgeMs) continue;
+            await fs.promises.rm(target, { recursive: true, force: true });
+            removed.push(name);
+            console.log(`🧹 删除孤儿分块目录: ${target}`);
+        } catch (error) {
+            console.warn(`🧹 清理孤儿分块目录失败: ${target}`, error);
+        }
+    }
+    return removed;
+}
+
 /**
  * 清理孤儿文件
  * 扫描 uploads 目录，删除不在数据库中的文件
@@ -181,6 +234,16 @@ export async function cleanupOrphanFiles(): Promise<CleanupStats> {
 
         // 4. 删除空文件夹
         removeEmptyDirectories(UPLOAD_DIR);
+
+        // 5. 清理无主分块目录
+        try {
+            const orphanChunkDirs = await cleanupOrphanChunkDirectories();
+            if (orphanChunkDirs.length > 0) {
+                console.log(`🧹 清理孤儿分块目录: ${orphanChunkDirs.length} 个`);
+            }
+        } catch (e) {
+            console.error('🧹 孤儿分块目录清理失败:', e);
+        }
 
         stats.freedSpace = formatBytes(stats.freedBytes);
 

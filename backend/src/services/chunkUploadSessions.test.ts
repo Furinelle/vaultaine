@@ -312,6 +312,46 @@ test('concurrent conflicting writers cannot overwrite or delete the winning chun
     await fs.rm(directory, { recursive: true, force: true });
 });
 
+test('a stale chunk lock left by a killed process is reclaimed and the write proceeds', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-vault-chunk-lock-'));
+    const finalPath = path.join(directory, 'chunk_0');
+    const lockPath = `${finalPath}.lock`;
+    await fs.writeFile(lockPath, '');
+    const staleTime = new Date(Date.now() - 11 * 60 * 1000);
+    await fs.utimes(lockPath, staleTime, staleTime);
+
+    const chunk = await writeChunkAtomically({
+        stream: Readable.from(['abcdef']),
+        finalPath,
+        expectedSize: 6,
+        expectedSha256: crypto.createHash('sha256').update('abcdef').digest('hex'),
+        maxChunkBytes: 10,
+    });
+
+    assert.equal(chunk.size, 6);
+    assert.equal(await fs.readFile(chunk.path, 'utf8'), 'abcdef');
+    assert.equal(await fs.access(lockPath).then(() => true, () => false), false);
+    await fs.rm(directory, { recursive: true, force: true });
+});
+
+test('a fresh chunk lock still rejects a concurrent writer', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-vault-chunk-lock-'));
+    const finalPath = path.join(directory, 'chunk_0');
+    const lockPath = `${finalPath}.lock`;
+    await fs.writeFile(lockPath, '');
+
+    await assert.rejects(writeChunkAtomically({
+        stream: Readable.from(['abcdef']),
+        finalPath,
+        expectedSize: 6,
+        expectedSha256: crypto.createHash('sha256').update('abcdef').digest('hex'),
+        maxChunkBytes: 10,
+    }), (error: unknown) => error instanceof Error && error.name === 'ChunkWriteBusyError');
+
+    assert.equal(await fs.access(lockPath).then(() => true, () => false), true);
+    await fs.rm(directory, { recursive: true, force: true });
+});
+
 test('completion integrity verification rejects same-size chunk tampering', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-vault-chunk-hash-'));
     const chunkPath = path.join(directory, 'chunk_0');
