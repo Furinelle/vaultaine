@@ -153,17 +153,31 @@ const TELEGRAM_HEAVY_RATE_WINDOW_MS = Math.max(60_000, parseInt(process.env.TELE
 const TELEGRAM_HEAVY_RATE_MAX = Math.max(1, parseInt(process.env.TELEGRAM_HEAVY_RATE_MAX || '5', 10) || 5);
 const TELEGRAM_HEAVY_COMMANDS = new Set(['/ytdlp', '/tg_download', '/tg_date', '/tg_tag', '/cleanup_settings']);
 
-interface PinFailureState {
+export interface PinFailureState {
     windowStartedAt: number;
     failed: number;
     lockedUntil?: number;
 }
 
 const pinFailureState = new Map<number, PinFailureState>();
+let globalPinFailureState: PinFailureState | null = null;
 const TELEGRAM_PIN_FAIL_WINDOW_MS = Math.max(60_000, parseInt(process.env.TELEGRAM_PIN_FAIL_WINDOW_MS || '900000', 10) || 900_000);
 const TELEGRAM_PIN_FAIL_MAX = Math.max(3, parseInt(process.env.TELEGRAM_PIN_FAIL_MAX || '5', 10) || 5);
 const TELEGRAM_PIN_LOCK_MS = Math.max(60_000, parseInt(process.env.TELEGRAM_PIN_LOCK_MS || '900000', 10) || 900_000);
+const TELEGRAM_PIN_GLOBAL_FAIL_MAX = Math.max(5, parseInt(process.env.TELEGRAM_PIN_GLOBAL_FAIL_MAX || '20', 10) || 20);
+const TELEGRAM_PIN_GLOBAL_LOCK_MS = Math.max(60_000, parseInt(process.env.TELEGRAM_PIN_GLOBAL_LOCK_MS || '900000', 10) || 900_000);
 const TELEGRAM_PIN_REQUIRED_LENGTH = 4;
+
+export function advancePinFailureState(current: PinFailureState | null | undefined, now: number, windowMs: number, maxFailures: number, lockMs: number): PinFailureState {
+    const state: PinFailureState = !current || now - current.windowStartedAt >= windowMs
+        ? { windowStartedAt: now, failed: 0 }
+        : current;
+    state.failed += 1;
+    if (state.failed >= maxFailures) {
+        state.lockedUntil = now + lockMs;
+    }
+    return state;
+}
 
 function getPinLockSeconds(userId: number): number {
     const state = pinFailureState.get(userId);
@@ -176,18 +190,27 @@ function getPinLockSeconds(userId: number): number {
     return Math.ceil(remaining / 1000);
 }
 
+function getGlobalPinLockSeconds(): number {
+    if (!globalPinFailureState?.lockedUntil) return 0;
+    const remaining = globalPinFailureState.lockedUntil - Date.now();
+    if (remaining <= 0) {
+        globalPinFailureState = null;
+        return 0;
+    }
+    return Math.ceil(remaining / 1000);
+}
+
 function recordPinFailure(userId: number): { locked: boolean; retryAfterSeconds: number } {
     const now = Date.now();
-    const current = pinFailureState.get(userId);
-    const state: PinFailureState = !current || now - current.windowStartedAt >= TELEGRAM_PIN_FAIL_WINDOW_MS
-        ? { windowStartedAt: now, failed: 0 }
-        : current;
-    state.failed += 1;
-    if (state.failed >= TELEGRAM_PIN_FAIL_MAX) {
-        state.lockedUntil = now + TELEGRAM_PIN_LOCK_MS;
-    }
+    const state = advancePinFailureState(pinFailureState.get(userId), now, TELEGRAM_PIN_FAIL_WINDOW_MS, TELEGRAM_PIN_FAIL_MAX, TELEGRAM_PIN_LOCK_MS);
     pinFailureState.set(userId, state);
-    return { locked: Boolean(state.lockedUntil && state.lockedUntil > now), retryAfterSeconds: state.lockedUntil ? Math.ceil((state.lockedUntil - now) / 1000) : 0 };
+    const globalWasLocked = Boolean(globalPinFailureState?.lockedUntil && globalPinFailureState.lockedUntil > now);
+    globalPinFailureState = advancePinFailureState(globalPinFailureState, now, TELEGRAM_PIN_FAIL_WINDOW_MS, TELEGRAM_PIN_GLOBAL_FAIL_MAX, TELEGRAM_PIN_GLOBAL_LOCK_MS);
+    if (!globalWasLocked && globalPinFailureState.lockedUntil && globalPinFailureState.lockedUntil > now) {
+        console.warn(`🤖 Telegram PIN 在 ${Math.round(TELEGRAM_PIN_FAIL_WINDOW_MS / 60000)} 分钟窗口内跨用户累计失败 ${globalPinFailureState.failed} 次，已全局锁定 PIN 认证 ${Math.ceil(TELEGRAM_PIN_GLOBAL_LOCK_MS / 1000)} 秒（阈值 TELEGRAM_PIN_GLOBAL_FAIL_MAX=${TELEGRAM_PIN_GLOBAL_FAIL_MAX}）`);
+    }
+    const lockedUntil = Math.max(state.lockedUntil || 0, globalPinFailureState.lockedUntil || 0);
+    return { locked: lockedUntil > now, retryAfterSeconds: lockedUntil > now ? Math.ceil((lockedUntil - now) / 1000) : 0 };
 }
 
 function clearPinFailures(userId: number): void {
@@ -860,7 +883,7 @@ async function handlePasswordCallback(update: Api.UpdateBotCallbackQuery): Promi
 
     if (!data.startsWith('pwd_')) return;
 
-    const lockSeconds = getPinLockSeconds(userId);
+    const lockSeconds = Math.max(getPinLockSeconds(userId), getGlobalPinLockSeconds());
     if (lockSeconds > 0) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({
             queryId: update.queryId,
@@ -924,6 +947,8 @@ async function handlePasswordCallback(update: Api.UpdateBotCallbackQuery): Promi
                         const authenticatedUserCount = await countAuthenticatedTelegramUsers();
                         if (shouldAutoAllowFirstTelegramUser(allowedUsers, authenticatedUserCount)) {
                             allowedUsers = await addTelegramAllowedUser(userId);
+                        } else if (allowedUsers.length === 0 && authenticatedUserCount === 0) {
+                            console.warn(`🤖 Telegram 用户 ${userId} 输入了正确 PIN，但允许列表为空且首用户自动放行已默认关闭，已拒绝。请把该 user id 加入 TELEGRAM_ALLOWED_USER_IDS（或后台允许列表），或显式设置 TELEGRAM_AUTO_ALLOW_FIRST_USER=true 恢复旧版首用户自动放行。`);
                         }
                     }
 

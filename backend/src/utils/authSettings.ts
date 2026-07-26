@@ -161,8 +161,12 @@ export function serializeTelegramAllowedUserIds(userIds: number[]): string {
     return parseTelegramAllowedUserIds(userIds.join(',')).join(',');
 }
 
-export function shouldAutoAllowFirstTelegramUser(allowedUsers: number[], authenticatedUserCount: number): boolean {
-    return allowedUsers.length === 0 && authenticatedUserCount === 0;
+export function isTelegramAutoAllowFirstUserEnabled(value: string | undefined = process.env.TELEGRAM_AUTO_ALLOW_FIRST_USER): boolean {
+    return (value || '').trim() === 'true';
+}
+
+export function shouldAutoAllowFirstTelegramUser(allowedUsers: number[], authenticatedUserCount: number, autoAllowEnabled: boolean = isTelegramAutoAllowFirstUserEnabled()): boolean {
+    return autoAllowEnabled && allowedUsers.length === 0 && authenticatedUserCount === 0;
 }
 
 export async function getStoredTelegramAllowedUsers(): Promise<number[]> {

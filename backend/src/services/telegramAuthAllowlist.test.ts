@@ -9,5 +9,7 @@ assert.equal(canTelegramUserAuthenticate(8, [7]), false);
 const source = fs.readFileSync(new URL('./telegramBot.ts', import.meta.url), 'utf8');
 assert.doesNotMatch(source, /Received text from.*\$\{text\}/);
 assert.doesNotMatch(source, /command received.*\$\{text\}/);
+assert.match(source, /shouldAutoAllowFirstTelegramUser\(allowedUsers, authenticatedUserCount\)/);
+assert.match(source, /TELEGRAM_AUTO_ALLOW_FIRST_USER=true/);
 
 console.log('telegram authentication allowlist ok');
