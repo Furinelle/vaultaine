@@ -1,5 +1,4 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import crypto from 'crypto';
 import { TOKEN_EXPIRY } from '../utils/config.js';
 import { query } from '../db/index.js';
 import { createWebSessionStore } from '../services/webSessionStore.js';
@@ -112,11 +111,6 @@ const sessionCleanupTimer = setInterval(() => {
     void query('DELETE FROM web_sessions WHERE expires_at <= NOW()').catch(error => console.warn('清理过期 Web 会话失败:', error));
 }, 60 * 60 * 1000);
 sessionCleanupTimer.unref?.();
-
-// 生成密码哈希（兼容旧部署文档）
-export function hashPassword(password: string): string {
-    return crypto.createHash('sha256').update(password).digest('hex');
-}
 
 async function issueSession(req: Request, res: Response) {
     const expiresAt = new Date(Date.now() + TOKEN_EXPIRY);

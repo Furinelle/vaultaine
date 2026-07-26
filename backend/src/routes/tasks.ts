@@ -239,7 +239,11 @@ router.post('/dismissals/confirm', requireAuth, async (req: Request, res: Respon
         : { status: 'missing' as const };
     if (confirmed.status !== 'ok') return res.status(409).json({ error: '需要一次性任务删除确认令牌', code: 'CONFIRMATION_REQUIRED' });
     try {
-        const frozen = JSON.parse(context) as any[];
+        const frozen = JSON.parse(context);
+        if (!Array.isArray(frozen) || frozen.some(item => !item || typeof item !== 'object'
+            || typeof item.sourceType !== 'string' || typeof item.id !== 'string' || typeof item.updatedAt !== 'string')) {
+            return res.status(400).json({ error: '删除快照无效' });
+        }
         const live = await collectUnifiedTasks(500);
         const liveMap = new Map(live.map(task => [`${task.sourceType}:${task.id}`, task]));
         const dismissed: any[] = [];

@@ -24,6 +24,14 @@ test('task dismissal is exact-version soft removal and never deletes source rows
     assert.match(routes, /cloudObjectsDeleted: false/);
 });
 
+test('confirm validates the frozen snapshot shape before dismissal processing', () => {
+    assert.match(routes, /Array\.isArray\(frozen\)/);
+    assert.match(routes, /typeof item\.sourceType !== 'string'/);
+    assert.match(routes, /typeof item\.id !== 'string'/);
+    assert.match(routes, /typeof item\.updatedAt !== 'string'/);
+    assert.match(routes, /res\.status\(400\)\.json\(\{ error: '删除快照无效' \}\)/);
+});
+
 test('unprepared or replayed task dismissal confirmation fails closed', () => {
     assert.match(routes, /CONFIRMATION_REQUIRED/);
     assert.match(routes, /status !== 'ok'/);
