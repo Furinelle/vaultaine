@@ -2993,8 +2993,11 @@ function parseTelegramAllowedUserIds(value) {
   if (!value) return [];
   return [...new Set(String(value).split(/[\s,]+/).map((item) => Number(item.trim())).filter((item) => Number.isSafeInteger(item) && item > 0))].sort((a, b) => a - b);
 }
-function shouldAutoAllowFirstTelegramUser(allowedUsers, authenticatedUserCount) {
-  return allowedUsers.length === 0 && authenticatedUserCount === 0;
+function isTelegramAutoAllowFirstUserEnabled(value = process.env.TELEGRAM_AUTO_ALLOW_FIRST_USER) {
+  return (value || "").trim() === "true";
+}
+function shouldAutoAllowFirstTelegramUser(allowedUsers, authenticatedUserCount, autoAllowEnabled = isTelegramAutoAllowFirstUserEnabled()) {
+  return autoAllowEnabled && allowedUsers.length === 0 && authenticatedUserCount === 0;
 }
 async function getStoredTelegramAllowedUsers() {
   const stored = await getSetting(TELEGRAM_ALLOWED_USERS_KEY, "");
@@ -7284,27 +7287,17 @@ async function waitForChannelExecutionPermission(getExecutionControlState, signa
     }).catch(() => void 0);
   }
 }
-async function waitForStorageCooldownRetry(initialRetryAt, signal, retry, onWaiting, now = Date.now) {
-  let retryAt = initialRetryAt;
-  while (retryAt && !signal.aborted) {
-    await onWaiting?.(retryAt);
-    while (!signal.aborted && now() < retryAt.getTime()) {
-      await new Promise((resolve) => {
-        const onAbort = () => {
-          clearTimeout(timer);
-          resolve();
-        };
-        const timer = setTimeout(() => {
-          signal.removeEventListener("abort", onAbort);
-          resolve();
-        }, Math.min(3e4, Math.max(1e3, retryAt.getTime() - now())));
-        signal.addEventListener("abort", onAbort, { once: true });
-      });
-    }
-    if (signal.aborted) return "cancelled";
-    retryAt = await retry();
-  }
-  return signal.aborted ? "cancelled" : "success";
+function scheduleStorageCooldownRequeue(queue, input, now = Date.now, setTimer = (handler, ms) => setTimeout(handler, ms)) {
+  queue.pauseGroup(input.groupId, {}, true);
+  void queue.add(input.groupId, input.fileName, input.execute, input.totalSize || 0, input.onPendingCancelled).catch((err) => {
+    console.error(`\u{1F916} \u5B58\u50A8\u51B7\u5374\u4EFB\u52A1\u91CD\u65B0\u5165\u961F\u5F02\u5E38: ${input.fileName}`, err);
+  });
+  const scheduleResume = (delayMs) => {
+    setTimer(() => {
+      if (queue.resumeGroup(input.groupId, {}, true).status === "blocked") scheduleResume(3e4);
+    }, Math.max(0, Math.min(delayMs, 2147483647))).unref?.();
+  };
+  scheduleResume(input.cooldownUntil.getTime() - now());
 }
 async function processFileUpload(client2, file, queue, groupId, getExecutionControlState) {
   file.status = "queued";
@@ -8478,24 +8471,23 @@ async function handleFileUpload(client2, event) {
         }
         success = await attemptSingleUpload(signal, reportQueueProgress);
       }
-      if (storageCooldownUntil) {
+      if (storageCooldownUntil && !signal.aborted) {
+        const cooldownRetryAt = storageCooldownUntil;
+        storageCooldownUntil = void 0;
+        lastError = void 0;
         updateUploadPhase(chatIdStr, uploadId, { phase: "queued" });
-        const retryResult = await waitForStorageCooldownRetry(
-          storageCooldownUntil,
-          signal,
-          async () => {
-            storageCooldownUntil = void 0;
-            lastError = void 0;
-            success = await attemptSingleUpload(signal, reportQueueProgress);
-            return storageCooldownUntil;
-          },
-          async (retryAt) => {
-            if (statusMsg && !silentSessionMap.has(chatIdStr)) {
-              await safeEditMessage(client2, chatId, { message: statusMsg.id, text: lastError || formatStorageCooldownNotice(retryAt) });
-            }
-          }
-        );
-        if (retryResult === "cancelled") return { status: "success" };
+        scheduleStorageCooldownRequeue(downloadQueue, {
+          groupId: singleGroupId,
+          fileName: finalFileName,
+          execute: singleUploadTask,
+          totalSize,
+          onPendingCancelled: onSinglePendingCancelled,
+          cooldownUntil: cooldownRetryAt
+        });
+        if (statusMsg && !silentSessionMap.has(chatIdStr)) {
+          await safeEditMessage(client2, chatId, { message: statusMsg.id, text: formatStorageCooldownNotice(cooldownRetryAt) });
+        }
+        return { status: "success" };
       }
       if (signal.aborted) {
         lastError = "\u7528\u6237\u5F3A\u5236\u505C\u6B62\u4E0B\u8F7D\u4EFB\u52A1";
@@ -11045,6 +11037,198 @@ import path14 from "node:path";
 import { spawn } from "node:child_process";
 init_storageCooldown();
 init_telegramUtils();
+
+// src/utils/ssrfEgressProxy.ts
+init_networkSecurity();
+import dns2 from "node:dns/promises";
+import http2 from "node:http";
+import net2 from "node:net";
+function privateNetworkError() {
+  return Object.assign(
+    new Error("\u4E0D\u5141\u8BB8\u8FDE\u63A5\u5185\u7F51\u3001\u56DE\u73AF\u6216\u4FDD\u7559\u5730\u5740"),
+    { code: "ERR_PRIVATE_NETWORK_ADDRESS" }
+  );
+}
+function isPolicyRejection(error) {
+  return error?.code === "ERR_PRIVATE_NETWORK_ADDRESS";
+}
+async function resolvePublicTarget(hostname) {
+  const bare = hostname.replace(/^\[|\]$/g, "");
+  if (!bare || ["localhost", "localhost.localdomain"].includes(bare.toLowerCase())) {
+    throw privateNetworkError();
+  }
+  const directFamily = net2.isIP(bare);
+  if (directFamily) {
+    if (isPrivateAddress(bare)) throw privateNetworkError();
+    return [{ address: bare, family: directFamily }];
+  }
+  const addresses = await dns2.lookup(bare, { all: true, verbatim: true });
+  if (addresses.length === 0 || addresses.some((item) => isPrivateAddress(item.address))) {
+    throw privateNetworkError();
+  }
+  return addresses.map((item) => ({ address: item.address, family: item.family }));
+}
+function parseConnectAuthority(authority) {
+  const match = authority.match(/^\[([^\]]+)\]:(\d+)$/) || authority.match(/^([^:[\]]+):(\d+)$/);
+  if (!match) return null;
+  const port = Number(match[2]);
+  if (!match[1] || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return { hostname: match[1], port };
+}
+var SsrfEgressProxy = class {
+  constructor(resolveTarget = resolvePublicTarget) {
+    this.resolveTarget = resolveTarget;
+  }
+  resolveTarget;
+  server = null;
+  sockets = /* @__PURE__ */ new Set();
+  get port() {
+    const address = this.server?.address();
+    return address && typeof address === "object" ? address.port : 0;
+  }
+  async start() {
+    if (this.server) return this.port;
+    const server2 = http2.createServer((request, response) => this.handleRequest(request, response));
+    server2.on("connect", (request, clientSocket, head) => this.handleConnect(request, clientSocket, head));
+    server2.on("connection", (socket) => this.track(socket));
+    this.server = server2;
+    await new Promise((resolve, reject) => {
+      server2.once("error", reject);
+      server2.listen(0, "127.0.0.1", () => {
+        server2.removeListener("error", reject);
+        server2.on("error", (error) => console.error("[ssrf-proxy] server error:", error));
+        resolve();
+      });
+    });
+    server2.unref();
+    return this.port;
+  }
+  async stop() {
+    const server2 = this.server;
+    if (!server2) return;
+    this.server = null;
+    for (const socket of this.sockets) socket.destroy();
+    this.sockets.clear();
+    await new Promise((resolve) => server2.close(() => resolve()));
+  }
+  track(socket) {
+    if (this.sockets.has(socket)) return;
+    this.sockets.add(socket);
+    socket.once("close", () => this.sockets.delete(socket));
+  }
+  async connectUpstream(targets, port) {
+    let lastError = new Error("no reachable address");
+    for (const target of targets) {
+      try {
+        return await new Promise((resolve, reject) => {
+          const socket = net2.connect({ host: target.address, family: target.family, port });
+          socket.once("error", reject);
+          socket.once("connect", () => {
+            socket.removeListener("error", reject);
+            resolve(socket);
+          });
+        });
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+    throw lastError;
+  }
+  handleRequest(request, response) {
+    let parsed;
+    try {
+      parsed = new URL(request.url || "");
+    } catch {
+      response.writeHead(400).end();
+      return;
+    }
+    if (parsed.protocol !== "http:") {
+      response.writeHead(400).end();
+      return;
+    }
+    request.on("error", () => response.destroy());
+    void this.resolveTarget(parsed.hostname).then(async (targets) => {
+      const socket = await this.connectUpstream(targets, parsed.port ? Number(parsed.port) : 80);
+      if (response.destroyed) {
+        socket.destroy();
+        return;
+      }
+      this.track(socket);
+      const headers = { ...request.headers };
+      delete headers["proxy-connection"];
+      headers.host = parsed.host;
+      const upstream = http2.request({
+        createConnection: () => socket,
+        method: request.method,
+        path: `${parsed.pathname}${parsed.search}`,
+        headers,
+        setHost: false
+      }, (upstreamResponse) => {
+        response.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers);
+        upstreamResponse.pipe(response);
+      });
+      upstream.on("error", () => {
+        if (!response.headersSent) response.writeHead(502);
+        response.end();
+      });
+      response.on("close", () => upstream.destroy());
+      request.pipe(upstream);
+    }).catch((error) => {
+      if (isPolicyRejection(error)) response.writeHead(403, "SSRF-Blocked").end();
+      else response.writeHead(502).end();
+    });
+  }
+  handleConnect(request, clientSocket, head) {
+    clientSocket.on("error", () => clientSocket.destroy());
+    const authority = parseConnectAuthority(request.url || "");
+    if (!authority) {
+      clientSocket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+      return;
+    }
+    void this.resolveTarget(authority.hostname).then(async (targets) => {
+      const upstream = await this.connectUpstream(targets, authority.port);
+      if (clientSocket.destroyed) {
+        upstream.destroy();
+        return;
+      }
+      this.track(upstream);
+      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.length > 0) upstream.write(head);
+      upstream.pipe(clientSocket);
+      clientSocket.pipe(upstream);
+      upstream.on("error", () => clientSocket.destroy());
+      clientSocket.on("close", () => upstream.destroy());
+    }).catch((error) => {
+      clientSocket.end(`HTTP/1.1 ${isPolicyRejection(error) ? "403 SSRF-Blocked" : "502 Bad Gateway"}\r
+\r
+`);
+    });
+  }
+};
+var sharedProxy = null;
+var sharedStartup = null;
+function ensureSharedSsrfEgressProxy() {
+  if (!sharedStartup) {
+    const proxy = new SsrfEgressProxy();
+    sharedProxy = proxy;
+    sharedStartup = proxy.start().catch((error) => {
+      if (sharedProxy === proxy) {
+        sharedProxy = null;
+        sharedStartup = null;
+      }
+      throw error;
+    });
+  }
+  return sharedStartup;
+}
+async function stopSharedSsrfEgressProxy() {
+  const proxy = sharedProxy;
+  sharedProxy = null;
+  sharedStartup = null;
+  await proxy?.stop();
+}
+
+// src/services/ytDlpDownload.ts
 init_storageAccountLifecycle();
 var YTDLP_BIN = process.env.YTDLP_BIN || "yt-dlp";
 var YTDLP_WORK_DIR2 = process.env.YTDLP_WORK_DIR || "./data/uploads/ytdlp";
@@ -11081,6 +11265,8 @@ function selectPrimaryOutputFile(taskDir) {
   if (files.length === 0) return null;
   return { filePath: files[0].fullPath, fileName: files[0].name, size: files[0].size };
 }
+var YtDlpProcessError = class extends Error {
+};
 function parseYtDlpProgress(line) {
   const match = line.match(/\[download\]\s+([0-9]+(?:\.[0-9]+)?)%/i);
   if (!match) return null;
@@ -11090,8 +11276,9 @@ function parseYtDlpProgress(line) {
 }
 async function runYtDlpDownload(url, taskDir, signal, onProgress) {
   ensureDir(taskDir);
+  const proxyPort = await ensureSharedSsrfEgressProxy();
   const outputTemplate = path14.join(taskDir, "%(title).200s-%(id)s.%(ext)s");
-  const args = ["--no-playlist", "--newline", "--merge-output-format", "mp4", "-o", outputTemplate, "--", url];
+  const args = ["--no-playlist", "--newline", "--merge-output-format", "mp4", "--proxy", `http://127.0.0.1:${proxyPort}`, "-o", outputTemplate, "--", url];
   await new Promise((resolve, reject) => {
     const binLower = YTDLP_BIN.toLowerCase();
     const needsShell = os.platform() === "win32" && (binLower.endsWith(".cmd") || binLower.endsWith(".bat"));
@@ -11130,11 +11317,11 @@ async function runYtDlpDownload(url, taskDir, signal, onProgress) {
     };
     child.stdout.on("data", (data) => consume(data.toString(), false));
     child.stderr.on("data", (data) => consume(data.toString(), true));
-    child.once("error", (error) => finish(abortRequested ? cancellationError() : error));
+    child.once("error", (error) => finish(abortRequested ? cancellationError() : new YtDlpProcessError(error.message)));
     child.once("close", (code) => {
       if (abortRequested || signal.aborted) return finish(cancellationError());
       if (code === 0) return finish();
-      finish(new Error(stderr.trim() || `yt-dlp exited with code ${code}`));
+      finish(new YtDlpProcessError(stderr.trim() || `yt-dlp exited with code ${code}`));
     });
     if (signal.aborted) abortChild();
     else signal.addEventListener("abort", abortChild, { once: true });
@@ -11257,10 +11444,12 @@ function classifyYtDlpError(error) {
   if (/unsupported url/i.test(raw)) return "\u8BE5\u7F51\u7AD9\u6216\u94FE\u63A5\u6682\u4E0D\u53D7 yt-dlp \u652F\u6301\uFF0C\u8BF7\u68C0\u67E5\u94FE\u63A5\u662F\u5426\u4E3A\u5177\u4F53\u89C6\u9891\u9875\u9762\u3002";
   if (/sign in|login|cookies|members-only|private video|authentication/i.test(raw)) return "\u8BE5\u5185\u5BB9\u9700\u8981\u767B\u5F55\u6216\u65E0\u6743\u8BBF\u95EE\uFF1B\u5F53\u524D\u4EFB\u52A1\u672A\u914D\u7F6E\u7AD9\u70B9 Cookie\u3002";
   if (/not available|video unavailable|removed/i.test(raw)) return "\u5185\u5BB9\u4E0D\u5B58\u5728\u3001\u5DF2\u4E0B\u67B6\u6216\u5F53\u524D\u5730\u533A\u4E0D\u53EF\u7528\u3002";
-  if (/timed? out|network|connection|temporary failure|http error 5\d\d/i.test(raw)) return "\u4E0B\u8F7D\u7AD9\u70B9\u6216\u7F51\u7EDC\u6682\u65F6\u4E0D\u53EF\u7528\uFF0C\u53EF\u7A0D\u540E\u91CD\u8BD5\u3002";
+  if (/tunnel connection failed:\s*403|http error 403:\s*ssrf-blocked/i.test(raw)) return "\u76EE\u6807\u5730\u5740\u88AB\u51FA\u7AD9\u5B89\u5168\u7B56\u7565\u62E6\u622A\uFF1B\u4E0D\u5141\u8BB8\u8BBF\u95EE\u5185\u7F51\u3001\u56DE\u73AF\u6216\u4FDD\u7559\u5730\u5740\u3002";
+  if (/postprocessing|ffmpeg exited/i.test(raw)) return "\u4E0B\u8F7D\u5B8C\u6210\u4F46\u8F6C\u7801\u6216\u5408\u5E76\u5931\u8D25\uFF1B\u8BE6\u7EC6\u9519\u8BEF\u5DF2\u8BB0\u5F55\u5728\u670D\u52A1\u5668\u65E5\u5FD7\u3002";
+  if (/tunnel connection failed|unable to connect to proxy|proxyerror|timed? out|network|connection|temporary failure|http error 5\d\d/i.test(raw)) return "\u4E0B\u8F7D\u7AD9\u70B9\u6216\u7F51\u7EDC\u6682\u65F6\u4E0D\u53EF\u7528\uFF0C\u53EF\u7A0D\u540E\u91CD\u8BD5\u3002";
   if (/no space left|enospc/i.test(raw)) return "\u670D\u52A1\u5668\u4E34\u65F6\u78C1\u76D8\u7A7A\u95F4\u4E0D\u8DB3\uFF0C\u8BF7\u6E05\u7406\u7A7A\u95F4\u540E\u91CD\u8BD5\u3002";
-  const oneLine = raw.replace(/\s+/g, " ");
-  return oneLine.length > 500 ? `${oneLine.slice(0, 500)}...` : oneLine || "\u672A\u77E5\u9519\u8BEF";
+  if (error instanceof YtDlpProcessError || !raw) return "\u4E0B\u8F7D\u5931\u8D25\uFF0C\u539F\u56E0\u672A\u80FD\u81EA\u52A8\u8BC6\u522B\uFF1B\u8BE6\u7EC6\u9519\u8BEF\u5DF2\u8BB0\u5F55\u5728\u670D\u52A1\u5668\u65E5\u5FD7\u3002";
+  return raw;
 }
 async function notifyTask(task, message) {
   if (!task.chatId || !taskNotifier) return;
@@ -11380,6 +11569,7 @@ async function executeYtDlpTask(id) {
     const current2 = await getTransferTask("ytdlp", id).catch(() => null);
     const cancelled = current2?.status === "cancelled" || current2?.status === "pending" || controller.signal.aborted && !persistenceAbort;
     if (!cancelled) {
+      console.error(`[yt-dlp] task failed: ${id}`, error);
       let message = persistenceAbort ? "\u4EFB\u52A1\u72B6\u6001\u6301\u4E45\u5316\u8FDE\u7EED\u5931\u8D25\uFF0C\u5DF2\u4E2D\u65AD\u6267\u884C\uFF0C\u53EF\u7A0D\u540E\u91CD\u8BD5\u3002" : classifyYtDlpError(error);
       if (isStorageQuotaCooldownError(error)) {
         await markStorageAccountCooldown(error.storageAccountId || task.targetAccountId, error.provider, error.reason, error.cooldownUntil, error.message);
@@ -13338,10 +13528,21 @@ var TELEGRAM_HEAVY_RATE_WINDOW_MS = Math.max(6e4, parseInt(process.env.TELEGRAM_
 var TELEGRAM_HEAVY_RATE_MAX = Math.max(1, parseInt(process.env.TELEGRAM_HEAVY_RATE_MAX || "5", 10) || 5);
 var TELEGRAM_HEAVY_COMMANDS = /* @__PURE__ */ new Set(["/ytdlp", "/tg_download", "/tg_date", "/tg_tag", "/cleanup_settings"]);
 var pinFailureState = /* @__PURE__ */ new Map();
+var globalPinFailureState = null;
 var TELEGRAM_PIN_FAIL_WINDOW_MS = Math.max(6e4, parseInt(process.env.TELEGRAM_PIN_FAIL_WINDOW_MS || "900000", 10) || 9e5);
 var TELEGRAM_PIN_FAIL_MAX = Math.max(3, parseInt(process.env.TELEGRAM_PIN_FAIL_MAX || "5", 10) || 5);
 var TELEGRAM_PIN_LOCK_MS = Math.max(6e4, parseInt(process.env.TELEGRAM_PIN_LOCK_MS || "900000", 10) || 9e5);
+var TELEGRAM_PIN_GLOBAL_FAIL_MAX = Math.max(5, parseInt(process.env.TELEGRAM_PIN_GLOBAL_FAIL_MAX || "20", 10) || 20);
+var TELEGRAM_PIN_GLOBAL_LOCK_MS = Math.max(6e4, parseInt(process.env.TELEGRAM_PIN_GLOBAL_LOCK_MS || "900000", 10) || 9e5);
 var TELEGRAM_PIN_REQUIRED_LENGTH = 4;
+function advancePinFailureState(current2, now, windowMs, maxFailures, lockMs) {
+  const state = !current2 || now - current2.windowStartedAt >= windowMs ? { windowStartedAt: now, failed: 0 } : current2;
+  state.failed += 1;
+  if (state.failed >= maxFailures) {
+    state.lockedUntil = now + lockMs;
+  }
+  return state;
+}
 function getPinLockSeconds(userId) {
   const state = pinFailureState.get(userId);
   if (!state?.lockedUntil) return 0;
@@ -13352,16 +13553,26 @@ function getPinLockSeconds(userId) {
   }
   return Math.ceil(remaining / 1e3);
 }
+function getGlobalPinLockSeconds() {
+  if (!globalPinFailureState?.lockedUntil) return 0;
+  const remaining = globalPinFailureState.lockedUntil - Date.now();
+  if (remaining <= 0) {
+    globalPinFailureState = null;
+    return 0;
+  }
+  return Math.ceil(remaining / 1e3);
+}
 function recordPinFailure(userId) {
   const now = Date.now();
-  const current2 = pinFailureState.get(userId);
-  const state = !current2 || now - current2.windowStartedAt >= TELEGRAM_PIN_FAIL_WINDOW_MS ? { windowStartedAt: now, failed: 0 } : current2;
-  state.failed += 1;
-  if (state.failed >= TELEGRAM_PIN_FAIL_MAX) {
-    state.lockedUntil = now + TELEGRAM_PIN_LOCK_MS;
-  }
+  const state = advancePinFailureState(pinFailureState.get(userId), now, TELEGRAM_PIN_FAIL_WINDOW_MS, TELEGRAM_PIN_FAIL_MAX, TELEGRAM_PIN_LOCK_MS);
   pinFailureState.set(userId, state);
-  return { locked: Boolean(state.lockedUntil && state.lockedUntil > now), retryAfterSeconds: state.lockedUntil ? Math.ceil((state.lockedUntil - now) / 1e3) : 0 };
+  const globalWasLocked = Boolean(globalPinFailureState?.lockedUntil && globalPinFailureState.lockedUntil > now);
+  globalPinFailureState = advancePinFailureState(globalPinFailureState, now, TELEGRAM_PIN_FAIL_WINDOW_MS, TELEGRAM_PIN_GLOBAL_FAIL_MAX, TELEGRAM_PIN_GLOBAL_LOCK_MS);
+  if (!globalWasLocked && globalPinFailureState.lockedUntil && globalPinFailureState.lockedUntil > now) {
+    console.warn(`\u{1F916} Telegram PIN \u5728 ${Math.round(TELEGRAM_PIN_FAIL_WINDOW_MS / 6e4)} \u5206\u949F\u7A97\u53E3\u5185\u8DE8\u7528\u6237\u7D2F\u8BA1\u5931\u8D25 ${globalPinFailureState.failed} \u6B21\uFF0C\u5DF2\u5168\u5C40\u9501\u5B9A PIN \u8BA4\u8BC1 ${Math.ceil(TELEGRAM_PIN_GLOBAL_LOCK_MS / 1e3)} \u79D2\uFF08\u9608\u503C TELEGRAM_PIN_GLOBAL_FAIL_MAX=${TELEGRAM_PIN_GLOBAL_FAIL_MAX}\uFF09`);
+  }
+  const lockedUntil = Math.max(state.lockedUntil || 0, globalPinFailureState.lockedUntil || 0);
+  return { locked: lockedUntil > now, retryAfterSeconds: lockedUntil > now ? Math.ceil((lockedUntil - now) / 1e3) : 0 };
 }
 function clearPinFailures(userId) {
   pinFailureState.delete(userId);
@@ -13960,7 +14171,7 @@ async function handlePasswordCallback(update) {
   const userId = update.userId.toJSNumber();
   const data = Buffer.from(update.data || []).toString("utf-8");
   if (!data.startsWith("pwd_")) return;
-  const lockSeconds = getPinLockSeconds(userId);
+  const lockSeconds = Math.max(getPinLockSeconds(userId), getGlobalPinLockSeconds());
   if (lockSeconds > 0) {
     await client.invoke(new Api7.messages.SetBotCallbackAnswer({
       queryId: update.queryId,
@@ -14017,6 +14228,8 @@ async function handlePasswordCallback(update) {
             const authenticatedUserCount = await countAuthenticatedTelegramUsers();
             if (shouldAutoAllowFirstTelegramUser(allowedUsers, authenticatedUserCount)) {
               allowedUsers = await addTelegramAllowedUser(userId);
+            } else if (allowedUsers.length === 0 && authenticatedUserCount === 0) {
+              console.warn(`\u{1F916} Telegram \u7528\u6237 ${userId} \u8F93\u5165\u4E86\u6B63\u786E PIN\uFF0C\u4F46\u5141\u8BB8\u5217\u8868\u4E3A\u7A7A\u4E14\u9996\u7528\u6237\u81EA\u52A8\u653E\u884C\u5DF2\u9ED8\u8BA4\u5173\u95ED\uFF0C\u5DF2\u62D2\u7EDD\u3002\u8BF7\u628A\u8BE5 user id \u52A0\u5165 TELEGRAM_ALLOWED_USER_IDS\uFF08\u6216\u540E\u53F0\u5141\u8BB8\u5217\u8868\uFF09\uFF0C\u6216\u663E\u5F0F\u8BBE\u7F6E TELEGRAM_AUTO_ALLOW_FIRST_USER=true \u6062\u590D\u65E7\u7248\u9996\u7528\u6237\u81EA\u52A8\u653E\u884C\u3002`);
             }
           }
           if (!canTelegramUserAuthenticate(userId, allowedUsers)) {
@@ -17364,6 +17577,7 @@ init_storage();
 
 // src/services/bucketImport.ts
 import path20 from "node:path";
+import { randomUUID } from "node:crypto";
 var INVALID_FILE_NAME_CHARACTERS = /[\\\x00-\x1f\x7f]/;
 function normalizeBucketObjectForImport(object) {
   const key = typeof object.key === "string" ? object.key : "";
@@ -17406,6 +17620,7 @@ async function runBucketImport(options) {
       result.imported += inserted;
       result.skipped += records.length - inserted;
     }
+    options.onProgress?.({ ...result });
     const nextToken = page.nextContinuationToken;
     if (nextToken && seenTokens.has(nextToken)) {
       throw new Error("\u5B58\u50A8\u6876\u5206\u9875\u6E38\u6807\u91CD\u590D");
@@ -17414,6 +17629,52 @@ async function runBucketImport(options) {
     continuationToken = nextToken;
   } while (continuationToken);
   return result;
+}
+var importTasks = /* @__PURE__ */ new Map();
+var FINISHED_TASK_RETENTION = 20;
+function pruneFinishedImportTasks() {
+  const finished = [...importTasks.values()].filter((task) => task.status !== "running").sort((a, b) => String(a.finishedAt).localeCompare(String(b.finishedAt)));
+  for (const task of finished.slice(0, Math.max(0, finished.length - FINISHED_TASK_RETENTION))) {
+    importTasks.delete(task.id);
+  }
+}
+function getBucketImportTask(id) {
+  const task = importTasks.get(id);
+  return task ? { ...task } : null;
+}
+function startBucketImportTask(options) {
+  const task = {
+    id: randomUUID(),
+    accountId: options.accountId,
+    status: "running",
+    scanned: 0,
+    imported: 0,
+    skipped: 0,
+    excluded: 0,
+    error: null,
+    startedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    finishedAt: null
+  };
+  importTasks.set(task.id, task);
+  void (async () => {
+    try {
+      const result = await options.run((progress) => Object.assign(task, progress));
+      Object.assign(task, result);
+      task.status = "completed";
+    } catch (error) {
+      task.status = "failed";
+      task.error = error instanceof Error ? error.message : String(error);
+    } finally {
+      task.finishedAt = (/* @__PURE__ */ new Date()).toISOString();
+      pruneFinishedImportTasks();
+      try {
+        await options.onSettled?.({ ...task });
+      } catch (settleError) {
+        console.error("\u5B58\u50A8\u6876\u5BFC\u5165\u4EFB\u52A1\u6536\u5C3E\u5931\u8D25:", settleError);
+      }
+    }
+  })();
+  return { ...task };
 }
 
 // src/utils/maintenanceActions.ts
@@ -18130,6 +18391,7 @@ router5.post("/import-from-bucket", requireAuth, async (_req, res) => {
   let client2 = null;
   let lockKey = null;
   let lockHeld = false;
+  let taskStarted = false;
   try {
     const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
     const { getFileType: getFileType3, getMimeTypeFromFilename: getMimeTypeFromFilename2 } = await Promise.resolve().then(() => (init_telegramUtils(), telegramUtils_exports));
@@ -18149,57 +18411,103 @@ router5.post("/import-from-bucket", requireAuth, async (_req, res) => {
     );
     lockHeld = lockResult.rows[0]?.locked === true;
     if (!lockHeld) {
-      return res.status(409).json({ error: "\u5F53\u524D\u5B58\u50A8\u8D26\u6237\u5DF2\u6709\u5BFC\u5165\u4EFB\u52A1\u6B63\u5728\u8FD0\u884C" });
+      return res.status(409).json({ error: "\u5F53\u524D\u5B58\u50A8\u8D26\u6237\u5DF2\u6709\u5BFC\u5165\u4EFB\u52A1\u6B63\u5728\u8FD0\u884C", code: "IMPORT_ALREADY_RUNNING" });
     }
-    const result = await runBucketImport({
-      listPage: (token) => provider.listObjectsPage(token),
-      insertBatch: async (records) => {
-        const incoming = records.map((record) => {
-          const mimeType = getMimeTypeFromFilename2(record.name);
-          return {
-            ...record,
-            mimeType,
-            type: getFileType3(mimeType)
-          };
-        });
-        const inserted = await client2.query(
-          `WITH incoming AS (
-                        SELECT *
-                        FROM jsonb_to_recordset($2::jsonb) AS item(
-                            name text,
-                            "storedName" text,
-                            type text,
-                            "mimeType" text,
-                            size bigint,
-                            path text,
-                            folder text
+    const importClient = client2;
+    const importLockKey = lockKey;
+    const task = startBucketImportTask({
+      accountId: activeAccountId,
+      run: (onProgress) => runBucketImport({
+        onProgress,
+        listPage: (token) => provider.listObjectsPage(token),
+        insertBatch: async (records) => {
+          const incoming = records.map((record) => {
+            const mimeType = getMimeTypeFromFilename2(record.name);
+            return {
+              ...record,
+              mimeType,
+              type: getFileType3(mimeType)
+            };
+          });
+          const inserted = await importClient.query(
+            `WITH incoming AS (
+                            SELECT *
+                            FROM jsonb_to_recordset($2::jsonb) AS item(
+                                name text,
+                                "storedName" text,
+                                type text,
+                                "mimeType" text,
+                                size bigint,
+                                path text,
+                                folder text
+                            )
                         )
-                    )
-                    INSERT INTO files
-                    (name, stored_name, type, mime_type, size, path, thumbnail_path, preview_path, width, height, source, folder, storage_account_id)
-                    SELECT item.name, item."storedName", item.type, item."mimeType", item.size, item.path,
-                           NULL, NULL, NULL, NULL, $3, item.folder, $1
-                    FROM incoming item
-                    ON CONFLICT (storage_account_id, path)
-                        WHERE storage_account_id IS NOT NULL
-                        DO NOTHING
-                    RETURNING id`,
-          [activeAccountId, JSON.stringify(incoming), provider.name]
-        );
-        return inserted.rowCount || 0;
+                        INSERT INTO files
+                        (name, stored_name, type, mime_type, size, path, thumbnail_path, preview_path, width, height, source, folder, storage_account_id)
+                        SELECT item.name, item."storedName", item.type, item."mimeType", item.size, item.path,
+                               NULL, NULL, NULL, NULL, $3, item.folder, $1
+                        FROM incoming item
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM chunk_upload_reconciliations r
+                            WHERE r.status = 'pending' AND r.account_id = $1 AND r.stored_path = item.path
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM telegram_write_reconciliations r
+                            WHERE r.status = 'pending' AND r.account_id = $1 AND r.stored_path = item.path
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM ytdlp_write_reconciliations r
+                            WHERE r.status = 'pending' AND r.account_id = $1 AND r.stored_path = item.path
+                        )
+                        ON CONFLICT (storage_account_id, path)
+                            WHERE storage_account_id IS NOT NULL
+                            DO NOTHING
+                        RETURNING id`,
+            [activeAccountId, JSON.stringify(incoming), provider.name]
+          );
+          return inserted.rowCount || 0;
+        }
+      }),
+      onSettled: async (finished) => {
+        if (finished.status === "failed") {
+          console.error("\u4ECE\u5B58\u50A8\u6876\u5BFC\u5165\u5931\u8D25:", finished.error);
+        } else {
+          console.log(`[Storage] Bucket import done: scanned=${finished.scanned} imported=${finished.imported} skipped=${finished.skipped} excluded=${finished.excluded}`);
+        }
+        await importClient.query("SELECT pg_advisory_unlock(hashtext($1))", [importLockKey]).catch(() => void 0);
+        importClient.release();
       }
     });
-    console.log(`[Storage] Bucket import done: scanned=${result.scanned} imported=${result.imported} skipped=${result.skipped} excluded=${result.excluded}`);
-    res.json({ success: true, ...result });
+    taskStarted = true;
+    res.status(202).json({ success: true, taskId: task.id });
   } catch (error) {
-    console.error("\u4ECE\u5B58\u50A8\u6876\u5BFC\u5165\u5931\u8D25:", error);
+    console.error("\u542F\u52A8\u5B58\u50A8\u6876\u5BFC\u5165\u5931\u8D25:", error);
     res.status(500).json({ error: "\u4ECE\u5B58\u50A8\u6876\u5BFC\u5165\u5931\u8D25" });
   } finally {
-    if (client2 && lockHeld && lockKey) {
-      await client2.query("SELECT pg_advisory_unlock(hashtext($1))", [lockKey]).catch(() => void 0);
+    if (!taskStarted) {
+      if (client2 && lockHeld && lockKey) {
+        await client2.query("SELECT pg_advisory_unlock(hashtext($1))", [lockKey]).catch(() => void 0);
+      }
+      client2?.release();
     }
-    client2?.release();
   }
+});
+router5.get("/import-from-bucket/tasks/:taskId", requireAuth, (req, res) => {
+  const task = getBucketImportTask(String(req.params.taskId || ""));
+  if (!task) {
+    return res.status(404).json({ error: "\u5BFC\u5165\u4EFB\u52A1\u4E0D\u5B58\u5728\uFF08\u670D\u52A1\u53EF\u80FD\u5DF2\u91CD\u542F\uFF0C\u4EFB\u52A1\u5DF2\u4E2D\u65AD\uFF09", code: "IMPORT_TASK_NOT_FOUND" });
+  }
+  res.json({
+    id: task.id,
+    status: task.status,
+    scanned: task.scanned,
+    imported: task.imported,
+    skipped: task.skipped,
+    excluded: task.excluded,
+    error: task.error,
+    startedAt: task.startedAt,
+    finishedAt: task.finishedAt
+  });
 });
 var storage_default = router5;
 
@@ -19742,6 +20050,9 @@ router7.post("/dismissals/confirm", requireAuth, async (req, res) => {
   if (confirmed.status !== "ok") return res.status(409).json({ error: "\u9700\u8981\u4E00\u6B21\u6027\u4EFB\u52A1\u5220\u9664\u786E\u8BA4\u4EE4\u724C", code: "CONFIRMATION_REQUIRED" });
   try {
     const frozen = JSON.parse(context);
+    if (!Array.isArray(frozen) || frozen.some((item) => !item || typeof item !== "object" || typeof item.sourceType !== "string" || typeof item.id !== "string" || typeof item.updatedAt !== "string")) {
+      return res.status(400).json({ error: "\u5220\u9664\u5FEB\u7167\u65E0\u6548" });
+    }
     const live = await collectUnifiedTasks(500);
     const liveMap = new Map(live.map((task) => [`${task.sourceType}:${task.id}`, task]));
     const dismissed = [];
@@ -20175,6 +20486,7 @@ async function shutdown(signal) {
   readinessError = `\u6B63\u5728\u56E0 ${signal} \u505C\u673A`;
   const forceTimer = setTimeout(() => process.exit(1), 3e4);
   forceTimer.unref();
+  await stopSharedSsrfEgressProxy().catch(() => void 0);
   if (server) {
     server.close(async () => {
       try {
