@@ -10,6 +10,7 @@ import { assertStorageTargetWritable, formatStorageCooldownNotice } from './stor
 import { markStorageAccountCooldown } from './storageCooldown.js';
 import { formatBytes, getFileType, getMimeTypeFromFilename, sanitizeFilename } from '../utils/telegramUtils.js';
 import { generateThumbnail, getImageDimensions } from '../utils/thumbnail.js';
+import { ensureSharedSsrfEgressProxy } from '../utils/ssrfEgressProxy.js';
 import { getUniqueStoredName } from '../utils/fileUtils.js';
 import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
 import { acquireStorageAccountOperationLease, withStorageAccountOperationLease } from './storageAccountOperation.js';
@@ -84,6 +85,8 @@ export function selectPrimaryOutputFile(taskDir: string): { filePath: string; fi
     return { filePath: files[0].fullPath, fileName: files[0].name, size: files[0].size };
 }
 
+export class YtDlpProcessError extends Error {}
+
 interface ParsedYtDlpProgress {
     percent: number;
     speed?: string;
@@ -105,8 +108,9 @@ async function runYtDlpDownload(
     onProgress: (progress: ParsedYtDlpProgress) => void,
 ): Promise<void> {
     ensureDir(taskDir);
+    const proxyPort = await ensureSharedSsrfEgressProxy();
     const outputTemplate = path.join(taskDir, '%(title).200s-%(id)s.%(ext)s');
-    const args = ['--no-playlist', '--newline', '--merge-output-format', 'mp4', '-o', outputTemplate, '--', url];
+    const args = ['--no-playlist', '--newline', '--merge-output-format', 'mp4', '--proxy', `http://127.0.0.1:${proxyPort}`, '-o', outputTemplate, '--', url];
 
     await new Promise<void>((resolve, reject) => {
         const binLower = YTDLP_BIN.toLowerCase();
@@ -148,11 +152,11 @@ async function runYtDlpDownload(
 
         child.stdout.on('data', data => consume(data.toString(), false));
         child.stderr.on('data', data => consume(data.toString(), true));
-        child.once('error', error => finish(abortRequested ? cancellationError() : error));
+        child.once('error', error => finish(abortRequested ? cancellationError() : new YtDlpProcessError(error.message)));
         child.once('close', code => {
             if (abortRequested || signal.aborted) return finish(cancellationError());
             if (code === 0) return finish();
-            finish(new Error(stderr.trim() || `yt-dlp exited with code ${code}`));
+            finish(new YtDlpProcessError(stderr.trim() || `yt-dlp exited with code ${code}`));
         });
         if (signal.aborted) abortChild();
         else signal.addEventListener('abort', abortChild, { once: true });
@@ -277,15 +281,17 @@ async function uploadDownloadedFile(
     return { finalPath, providerName: provider.name, size, storedName, folder, operationId, fileId: fileId! };
 }
 
-function classifyYtDlpError(error: unknown): string {
+export function classifyYtDlpError(error: unknown): string {
     const raw = (error instanceof Error ? error.message : String(error)).replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
     if (/unsupported url/i.test(raw)) return '该网站或链接暂不受 yt-dlp 支持，请检查链接是否为具体视频页面。';
     if (/sign in|login|cookies|members-only|private video|authentication/i.test(raw)) return '该内容需要登录或无权访问；当前任务未配置站点 Cookie。';
     if (/not available|video unavailable|removed/i.test(raw)) return '内容不存在、已下架或当前地区不可用。';
-    if (/timed? out|network|connection|temporary failure|http error 5\d\d/i.test(raw)) return '下载站点或网络暂时不可用，可稍后重试。';
+    if (/tunnel connection failed:\s*403|http error 403:\s*ssrf-blocked/i.test(raw)) return '目标地址被出站安全策略拦截；不允许访问内网、回环或保留地址。';
+    if (/postprocessing|ffmpeg exited/i.test(raw)) return '下载完成但转码或合并失败；详细错误已记录在服务器日志。';
+    if (/tunnel connection failed|unable to connect to proxy|proxyerror|timed? out|network|connection|temporary failure|http error 5\d\d/i.test(raw)) return '下载站点或网络暂时不可用，可稍后重试。';
     if (/no space left|enospc/i.test(raw)) return '服务器临时磁盘空间不足，请清理空间后重试。';
-    const oneLine = raw.replace(/\s+/g, ' ');
-    return oneLine.length > 500 ? `${oneLine.slice(0, 500)}...` : oneLine || '未知错误';
+    if (error instanceof YtDlpProcessError || !raw) return '下载失败，原因未能自动识别；详细错误已记录在服务器日志。';
+    return raw;
 }
 
 async function notifyTask(task: TransferTaskRecord, message: string): Promise<void> {
@@ -402,6 +408,7 @@ async function executeYtDlpTask(id: string): Promise<void> {
         const cancelled = current?.status === 'cancelled' || current?.status === 'pending'
             || (controller.signal.aborted && !persistenceAbort);
         if (!cancelled) {
+            console.error(`[yt-dlp] task failed: ${id}`, error);
             let message = persistenceAbort ? '任务状态持久化连续失败，已中断执行，可稍后重试。' : classifyYtDlpError(error);
             if (isStorageQuotaCooldownError(error)) {
                 await markStorageAccountCooldown(error.storageAccountId || task.targetAccountId, error.provider, error.reason, error.cooldownUntil, error.message);

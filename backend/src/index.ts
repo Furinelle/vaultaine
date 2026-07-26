@@ -22,6 +22,7 @@ import crypto from 'node:crypto';
 import { normalizeRequestId } from './services/operationalEvents.js';
 import { markTransferTasksAfterRestart } from './services/transferTasks.js';
 import { initializeYtDlpQueue } from './services/ytDlpDownload.js';
+import { stopSharedSsrfEgressProxy } from './utils/ssrfEgressProxy.js';
 import { logRuntimeConfigSummary, validateRuntimeConfig } from './utils/runtimeConfig.js';
 import { PRIVATE_MEDIA_CACHE_CONTROL } from './services/mediaCachePolicy.js';
 
@@ -231,6 +232,7 @@ async function shutdown(signal: string) {
     readinessError = `正在因 ${signal} 停机`;
     const forceTimer = setTimeout(() => process.exit(1), 30_000);
     forceTimer.unref();
+    await stopSharedSsrfEgressProxy().catch(() => undefined);
     if (server) {
         server.close(async () => {
             try {
