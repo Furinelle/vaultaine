@@ -71,6 +71,14 @@ test('restart reconciliation completes only an exact object and index match', as
     assert.match(sql, /resolution = 'committed'/);
 });
 
+test('transient persistence failures are tolerated and still settle instead of stranding running tasks', () => {
+    const source = fs.readFileSync(new URL('./ytDlpDownload.ts', import.meta.url), 'utf8');
+    assert.match(source, /heartbeatFailures >= YTDLP_PERSISTENCE_FAILURE_LIMIT\) controller\.abort\('execution_heartbeat_failed'\)/);
+    assert.match(source, /progressFailures >= YTDLP_PERSISTENCE_FAILURE_LIMIT\) controller\.abort\('progress_persistence_failed'\)/);
+    assert.match(source, /persistenceAbort = abortReason === 'execution_heartbeat_failed' \|\| abortReason === 'progress_persistence_failed'/);
+    assert.match(source, /controller\.signal\.aborted && !persistenceAbort/);
+});
+
 test('production yt-dlp admission locks its account before task persistence', () => {
     const source = fs.readFileSync(new URL('./ytDlpDownload.ts', import.meta.url), 'utf8');
     const block = source.slice(source.indexOf('export async function handleYtDlpCommand'));

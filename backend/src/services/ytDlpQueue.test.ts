@@ -31,3 +31,30 @@ test('retry committed while the old worker is active is enqueued after old gener
     ]);
     assert.equal(attempts, 2);
 });
+
+test('worker rejection is contained without unhandled rejection and scheduling continues', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+        const secondDone = deferred();
+        const ran: string[] = [];
+        const queue = new PersistentYtDlpQueue(1, async id => {
+            ran.push(id);
+            if (id === 'yd-crash') throw new Error('claim failed');
+            secondDone.resolve();
+        }, async () => false);
+
+        queue.enqueue('yd-crash');
+        queue.enqueue('yd-next');
+        await Promise.race([
+            secondDone.promise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('queue stalled after worker rejection')), 1000)),
+        ]);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(ran, ['yd-crash', 'yd-next']);
+        assert.equal(unhandled.length, 0);
+    } finally {
+        process.removeListener('unhandledRejection', onUnhandled);
+    }
+});

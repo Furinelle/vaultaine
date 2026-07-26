@@ -3,6 +3,7 @@ import { NewMessageEvent } from 'telegram/events/index.js';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { pipeline } from 'stream/promises';
 import bigInt from 'big-integer';
 import { query, pool } from '../db/index.js';
 import { generateThumbnail, getImageDimensions } from '../utils/thumbnail.js';
@@ -1470,25 +1471,22 @@ async function downloadAndSaveFile(
         } else {
             const writeStream = fs.createWriteStream(filePath);
 
-            for await (const chunk of client.iterDownload({
-                file: media,
-                requestSize: TELEGRAM_DOWNLOAD_PART_SIZE,
-            })) {
-                if (signal?.aborted) throw new Error('下载任务已停止');
-                writeStream.write(chunk);
-                downloadedSize += chunk.length;
+            const source = async function* () {
+                for await (const chunk of client.iterDownload({
+                    file: media,
+                    requestSize: TELEGRAM_DOWNLOAD_PART_SIZE,
+                })) {
+                    if (signal?.aborted) throw new Error('下载任务已停止');
+                    downloadedSize += chunk.length;
 
-                if (onProgress && totalSize > 0) {
-                    onProgress(downloadedSize, totalSize);
+                    if (onProgress && totalSize > 0) {
+                        onProgress(downloadedSize, totalSize);
+                    }
+                    yield chunk;
                 }
-            }
+            };
 
-            writeStream.end();
-
-            await new Promise<void>((resolve, reject) => {
-                writeStream.on('finish', resolve);
-                writeStream.on('error', reject);
-            });
+            await pipeline(source(), writeStream);
         }
 
         const stats = fs.statSync(filePath);

@@ -37,6 +37,7 @@ import {
 const YTDLP_BIN = process.env.YTDLP_BIN || 'yt-dlp';
 const YTDLP_WORK_DIR = process.env.YTDLP_WORK_DIR || './data/uploads/ytdlp';
 const YTDLP_MAX_CONCURRENT = Math.max(1, parseInt(process.env.YTDLP_MAX_CONCURRENT || '1', 10) || 1);
+const YTDLP_PERSISTENCE_FAILURE_LIMIT = 3;
 const activeControllers = new Map<string, AbortController>();
 let initialized = false;
 
@@ -300,16 +301,23 @@ async function executeYtDlpTask(id: string): Promise<void> {
     if (!task) return;
     const controller = new AbortController();
     activeControllers.set(id, controller);
+    let heartbeatFailures = 0;
     const heartbeat = setInterval(() => {
         void renewYtDlpExecution(pool, id, execution.generation, execution.leaseToken).then(owned => {
+            heartbeatFailures = 0;
             if (!owned) controller.abort('execution_lease_lost');
-        }).catch(() => controller.abort('execution_heartbeat_failed'));
+        }).catch(error => {
+            heartbeatFailures += 1;
+            console.error(`[yt-dlp] heartbeat renewal failed (${heartbeatFailures}/${YTDLP_PERSISTENCE_FAILURE_LIMIT}): ${id}`, error);
+            if (heartbeatFailures >= YTDLP_PERSISTENCE_FAILURE_LIMIT) controller.abort('execution_heartbeat_failed');
+        });
     }, 30_000);
     const workBaseDir = path.isAbsolute(YTDLP_WORK_DIR) ? YTDLP_WORK_DIR : path.join(process.cwd(), YTDLP_WORK_DIR);
     const taskDir = path.join(workBaseDir, id);
     await safeRmDir(taskDir);
     ensureDir(taskDir);
     let lastProgressPersistedAt = 0;
+    let progressFailures = 0;
 
     try {
         await runYtDlpDownload(String(task.payload.url || task.source || ''), taskDir, controller.signal, progress => {
@@ -320,10 +328,12 @@ async function executeYtDlpTask(id: string): Promise<void> {
                 progress: Math.min(90, progress.percent * 0.9),
                 payload: { speed: progress.speed || null, eta: progress.eta || null },
             }).then(owned => {
+                progressFailures = 0;
                 if (!owned) controller.abort('execution_lease_lost');
             }).catch(error => {
-                console.error(`[yt-dlp] progress persistence failed: ${id}`, error);
-                controller.abort('progress_persistence_failed');
+                progressFailures += 1;
+                console.error(`[yt-dlp] progress persistence failed (${progressFailures}/${YTDLP_PERSISTENCE_FAILURE_LIMIT}): ${id}`, error);
+                if (progressFailures >= YTDLP_PERSISTENCE_FAILURE_LIMIT) controller.abort('progress_persistence_failed');
             });
         });
         const primary = selectPrimaryOutputFile(taskDir);
@@ -386,10 +396,13 @@ async function executeYtDlpTask(id: string): Promise<void> {
             ].join('\n'));
         }
     } catch (error) {
-        const current = await getTransferTask('ytdlp', id);
-        const cancelled = controller.signal.aborted || current?.status === 'cancelled' || current?.status === 'pending';
+        const abortReason = controller.signal.aborted ? controller.signal.reason : null;
+        const persistenceAbort = abortReason === 'execution_heartbeat_failed' || abortReason === 'progress_persistence_failed';
+        const current = await getTransferTask('ytdlp', id).catch(() => null);
+        const cancelled = current?.status === 'cancelled' || current?.status === 'pending'
+            || (controller.signal.aborted && !persistenceAbort);
         if (!cancelled) {
-            let message = classifyYtDlpError(error);
+            let message = persistenceAbort ? '任务状态持久化连续失败，已中断执行，可稍后重试。' : classifyYtDlpError(error);
             if (isStorageQuotaCooldownError(error)) {
                 await markStorageAccountCooldown(error.storageAccountId || task.targetAccountId, error.provider, error.reason, error.cooldownUntil, error.message);
                 message = `${formatStorageCooldownNotice(error.cooldownUntil)} 可在恢复时间后重试本任务。`;
@@ -407,6 +420,9 @@ async function executeYtDlpTask(id: string): Promise<void> {
                 error: pendingJournal ? `${message}；外部写结果待对账，已阻止重试。` : message,
                 retryable: !pendingJournal,
                 failedItems: 1,
+            }).catch(settleError => {
+                console.error(`[yt-dlp] failure settlement failed: ${id}`, settleError);
+                return false;
             });
             if (failed) {
                 const failedTask = await getTransferTask('ytdlp', id);
@@ -444,7 +460,9 @@ export class PersistentYtDlpQueue {
         while (this.activeCount < this.maxConcurrent && this.pending.length > 0) {
             const id = this.pending.shift()!;
             this.activeCount += 1;
-            void this.worker(id).finally(() => {
+            void this.worker(id).catch(error => {
+                console.error(`[yt-dlp] worker failed unexpectedly: ${id}`, error);
+            }).finally(() => {
                 this.known.delete(id);
                 this.activeCount -= 1;
                 void this.shouldRequeue(id).then(requeue => {
