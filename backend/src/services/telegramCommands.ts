@@ -1096,6 +1096,7 @@ export async function handleTaskCenterCallback(
         return;
     }
     owner.expiresAt = Date.now() + TASK_CENTER_CARD_TTL_MS;
+    let callbackAnswered = false;
     try {
         if (parsed.view === 'list') {
             await renderTaskCenterList(client, update, userId, chatId, parsed.page);
@@ -1162,7 +1163,7 @@ export async function handleTaskCenterCallback(
                             ? '正在完成当前文件，随后暂停'
                             : '用户已暂停任务'
                         : undefined,
-                });
+                }, true);
                 if (parsed.action === 'pause' && result.group?.state === 'pausing') {
                     setTimeout(() => {
                         void refreshSilentProgress(client, update.peer, userId).catch(error => {
@@ -1200,6 +1201,11 @@ export async function handleTaskCenterCallback(
             toast = 'yt-dlp 任务不支持该操作';
         }
 
+        // Acknowledge the click before editing Telegram messages. Message edits
+        // can be delayed by FloodWait; the control action must still get an
+        // immediate visible response instead of leaving the button spinning.
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: toast, alert: !ok }));
+        callbackAnswered = true;
         if (parsed.action === 'cancel_confirm' || !ok) {
             await renderTaskCenterList(client, update, userId, chatId, parsed.page);
         } else {
@@ -1210,14 +1216,15 @@ export async function handleTaskCenterCallback(
                 await renderTaskCenterList(client, update, userId, chatId, parsed.page);
             }
         }
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: toast, alert: !ok }));
     } catch (error) {
         console.error('🤖 任务中心按钮操作失败:', error);
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({
-            queryId: update.queryId,
-            message: `操作失败: ${(error as Error).message}`,
-            alert: true,
-        }));
+        if (!callbackAnswered) {
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({
+                queryId: update.queryId,
+                message: `操作失败: ${(error as Error).message}`,
+                alert: true,
+            }));
+        }
     }
 }
 

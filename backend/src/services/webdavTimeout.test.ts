@@ -48,6 +48,29 @@ test('slow WebDAV upload is governed by a whole-request deadline, not local read
     }
 });
 
+test('WebDAV streamed uploads send the authoritative content length and MIME type', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'tg-vault-webdav-length-'));
+    const input = path.join(dir, 'payload.mp4');
+    await writeFile(input, Buffer.alloc(37));
+    const provider = new WebDAVStorageProvider('account-1', 'http://127.0.0.1:9');
+    let receivedOptions: { headers?: Record<string, string> } | undefined;
+    (provider as any).client = {
+        putFileContents: async (_remotePath: string, _stream: NodeJS.ReadableStream, options?: { headers?: Record<string, string> }) => {
+            receivedOptions = options;
+        },
+    };
+
+    try {
+        await provider.saveFile(input, 'payload.mp4', 'video/mp4');
+        assert.deepEqual(receivedOptions?.headers, {
+            'Content-Length': '37',
+            'Content-Type': 'video/mp4',
+        });
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
+});
+
 test('WebDAV metadata request aborts when the remote stops responding', async () => {
     const provider = new WebDAVStorageProvider('account-1', 'http://127.0.0.1:9', undefined, undefined, 20);
     (provider as any).client = {

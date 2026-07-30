@@ -510,7 +510,7 @@ export class WebDAVStorageProvider implements IStorageProvider {
         }
     }
 
-    async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null): Promise<string> {
+    async saveFile(tempPath: string, fileName: string, mimeType?: string, folder?: string | null): Promise<string> {
         try {
             const remotePath = folder ? `${folder}/${fileName}` : fileName;
             if (folder) {
@@ -519,8 +519,18 @@ export class WebDAVStorageProvider implements IStorageProvider {
                     'WebDAV create directory',
                 );
             }
+            const stats = await fs.promises.stat(tempPath);
             await this.withRequestTimeout(
-                signal => this.client.putFileContents(`/${remotePath}`, fs.createReadStream(tempPath), { signal }),
+                signal => this.client.putFileContents(`/${remotePath}`, fs.createReadStream(tempPath), {
+                    signal,
+                    headers: {
+                        // webdav skips Content-Length automatically for streams.
+                        // Cloudreve treats a streamed PUT without this header as a
+                        // zero-byte upload, so supply the authoritative file size.
+                        'Content-Length': String(stats.size),
+                        'Content-Type': mimeType || 'application/octet-stream',
+                    },
+                }),
                 'WebDAV upload',
                 this.uploadTimeoutMs,
             );

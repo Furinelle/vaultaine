@@ -52,6 +52,7 @@ import {
     markTelegramWriteObjectPresent,
     updateTelegramWriteAfterCompensation,
 } from './telegramWriteReconciliation.js';
+import { shouldRefreshSilentProgress } from './telegramProgressThrottle.js';
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
 const DEFAULT_TELEGRAM_DOWNLOAD_WORKERS = Math.max(1, Math.min(16, parseInt(process.env.TELEGRAM_DOWNLOAD_WORKERS || '4', 10) || 4));
@@ -451,6 +452,7 @@ async function ensureSilentNotice(client: TelegramClient, chatId: Api.TypeEntity
         }
         if (sMsg) {
             silentNoticeMessageIdMap.set(chatIdStr, sMsg.id);
+            lastSilentNotificationTimeMap.set(chatIdStr, Date.now());
             console.log(`[TG][silent] notice-sent chat=${chatIdStr} msg=${sMsg.id}`);
         }
         return sMsg;
@@ -1010,11 +1012,22 @@ function syncSilentSessionTotals(chatIdStr: string): SilentSession | null {
     return session;
 }
 
-export async function refreshSilentProgress(client: TelegramClient, chatId: Api.TypeEntityLike, userId?: number, pauseHint?: { paused: boolean; pausing: boolean; reason?: string }) {
+export async function refreshSilentProgress(
+    client: TelegramClient,
+    chatId: Api.TypeEntityLike,
+    userId?: number,
+    pauseHint?: { paused: boolean; pausing: boolean; reason?: string },
+    force = false,
+) {
     const chatIdStr = chatId.toString();
     if (!silentSessionMap.has(chatIdStr)) return;
     const silentMsgId = silentNoticeMessageIdMap.get(chatIdStr);
     if (!silentMsgId) return;
+    const now = Date.now();
+    if (!shouldRefreshSilentProgress(lastSilentNotificationTimeMap.get(chatIdStr), now, force, SILENT_NOTIFICATION_COOLDOWN)) return;
+    // Claim the refresh slot before awaiting Telegram so concurrent file
+    // callbacks cannot all pass the debounce gate and flood the same card.
+    lastSilentNotificationTimeMap.set(chatIdStr, now);
 
     const session = syncSilentSessionTotals(chatIdStr) || getSilentSession(chatIdStr);
     const batches = getConsolidatedBatches(chatIdStr);

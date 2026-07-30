@@ -1254,7 +1254,7 @@ var init_storage = __esm({
           throw storageProbeError(this.name, error);
         }
       }
-      async saveFile(tempPath, fileName, _mimeType, folder) {
+      async saveFile(tempPath, fileName, mimeType, folder) {
         try {
           const remotePath = folder ? `${folder}/${fileName}` : fileName;
           if (folder) {
@@ -1263,8 +1263,18 @@ var init_storage = __esm({
               "WebDAV create directory"
             );
           }
+          const stats = await fs4.promises.stat(tempPath);
           await this.withRequestTimeout(
-            (signal) => this.client.putFileContents(`/${remotePath}`, fs4.createReadStream(tempPath), { signal }),
+            (signal) => this.client.putFileContents(`/${remotePath}`, fs4.createReadStream(tempPath), {
+              signal,
+              headers: {
+                // webdav skips Content-Length automatically for streams.
+                // Cloudreve treats a streamed PUT without this header as a
+                // zero-byte upload, so supply the authoritative file size.
+                "Content-Length": String(stats.size),
+                "Content-Type": mimeType || "application/octet-stream"
+              }
+            }),
             "WebDAV upload",
             this.uploadTimeoutMs
           );
@@ -6217,6 +6227,11 @@ async function resolveClaimedTelegramWrite(input) {
   return resolved ? "resolved" : "pending";
 }
 
+// src/services/telegramProgressThrottle.ts
+function shouldRefreshSilentProgress(lastRefreshAt, now = Date.now(), force = false, cooldownMs = 3e4) {
+  return force || lastRefreshAt === void 0 || now - lastRefreshAt >= cooldownMs;
+}
+
 // src/services/telegramUpload.ts
 var UPLOAD_DIR = process.env.UPLOAD_DIR || "./data/uploads";
 var DEFAULT_TELEGRAM_DOWNLOAD_WORKERS = Math.max(1, Math.min(16, parseInt(process.env.TELEGRAM_DOWNLOAD_WORKERS || "4", 10) || 4));
@@ -6506,6 +6521,7 @@ async function ensureSilentNotice(client2, chatId, fileCount, replyToMsg) {
     }
     if (sMsg) {
       silentNoticeMessageIdMap.set(chatIdStr, sMsg.id);
+      lastSilentNotificationTimeMap.set(chatIdStr, Date.now());
       console.log(`[TG][silent] notice-sent chat=${chatIdStr} msg=${sMsg.id}`);
     }
     return sMsg;
@@ -6589,6 +6605,7 @@ var downloadQueue = new DownloadTaskQueue({
 var channelTaskAbortRegistry = new TaskAbortRegistry();
 var statusActionLocks = /* @__PURE__ */ new Map();
 var lastSilentNotificationTimeMap = /* @__PURE__ */ new Map();
+var SILENT_NOTIFICATION_COOLDOWN = 3e4;
 async function runStatusAction(chatId, action) {
   if (!chatId) return;
   const chatIdStr = chatId.toString();
@@ -6925,11 +6942,14 @@ function syncSilentSessionTotals(chatIdStr) {
   session.failed = Math.max(session.failed, transferSession.failed);
   return session;
 }
-async function refreshSilentProgress(client2, chatId, userId, pauseHint) {
+async function refreshSilentProgress(client2, chatId, userId, pauseHint, force = false) {
   const chatIdStr = chatId.toString();
   if (!silentSessionMap.has(chatIdStr)) return;
   const silentMsgId = silentNoticeMessageIdMap.get(chatIdStr);
   if (!silentMsgId) return;
+  const now = Date.now();
+  if (!shouldRefreshSilentProgress(lastSilentNotificationTimeMap.get(chatIdStr), now, force, SILENT_NOTIFICATION_COOLDOWN)) return;
+  lastSilentNotificationTimeMap.set(chatIdStr, now);
   const session = syncSilentSessionTotals(chatIdStr) || getSilentSession(chatIdStr);
   const batches = getConsolidatedBatches(chatIdStr);
   const files = getConsolidatedFiles(chatIdStr);
@@ -12673,6 +12693,7 @@ async function handleTaskCenterCallback(client2, update, data) {
     return;
   }
   owner.expiresAt = Date.now() + TASK_CENTER_CARD_TTL_MS;
+  let callbackAnswered = false;
   try {
     if (parsed.view === "list") {
       await renderTaskCenterList(client2, update, userId, chatId, parsed.page);
@@ -12726,7 +12747,7 @@ async function handleTaskCenterCallback(client2, update, data) {
           paused: result.group?.state === "paused",
           pausing: result.group?.state === "pausing",
           reason: parsed.action === "pause" ? result.group?.state === "pausing" ? "\u6B63\u5728\u5B8C\u6210\u5F53\u524D\u6587\u4EF6\uFF0C\u968F\u540E\u6682\u505C" : "\u7528\u6237\u5DF2\u6682\u505C\u4EFB\u52A1" : void 0
-        });
+        }, true);
         if (parsed.action === "pause" && result.group?.state === "pausing") {
           setTimeout(() => {
             void refreshSilentProgress(client2, update.peer, userId).catch((error) => {
@@ -12751,6 +12772,8 @@ async function handleTaskCenterCallback(client2, update, data) {
     } else {
       toast = "yt-dlp \u4EFB\u52A1\u4E0D\u652F\u6301\u8BE5\u64CD\u4F5C";
     }
+    await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: toast, alert: !ok }));
+    callbackAnswered = true;
     if (parsed.action === "cancel_confirm" || !ok) {
       await renderTaskCenterList(client2, update, userId, chatId, parsed.page);
     } else {
@@ -12761,14 +12784,15 @@ async function handleTaskCenterCallback(client2, update, data) {
         await renderTaskCenterList(client2, update, userId, chatId, parsed.page);
       }
     }
-    await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: toast, alert: !ok }));
   } catch (error) {
     console.error("\u{1F916} \u4EFB\u52A1\u4E2D\u5FC3\u6309\u94AE\u64CD\u4F5C\u5931\u8D25:", error);
-    await client2.invoke(new Api6.messages.SetBotCallbackAnswer({
-      queryId: update.queryId,
-      message: `\u64CD\u4F5C\u5931\u8D25: ${error.message}`,
-      alert: true
-    }));
+    if (!callbackAnswered) {
+      await client2.invoke(new Api6.messages.SetBotCallbackAnswer({
+        queryId: update.queryId,
+        message: `\u64CD\u4F5C\u5931\u8D25: ${error.message}`,
+        alert: true
+      }));
+    }
   }
 }
 async function getBulkTaskImpact(userId, chatId) {
@@ -14346,14 +14370,14 @@ async function handleTaskQueueCallback(update, data) {
   try {
     if (action === "pause") {
       const result = pauseDownloadTasks(taskId);
-      await refreshSilentProgress(client, update.peer, userId);
       await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: result.total > 0 ? "\u5DF2\u6682\u505C\u4E0B\u8F7D\u961F\u5217" : "\u5F53\u524D\u6CA1\u6709\u53EF\u6682\u505C\u7684\u4E0B\u8F7D\u4EFB\u52A1" }));
+      await refreshSilentProgress(client, update.peer, userId, void 0, true);
       return;
     }
     if (action === "resume") {
       const result = resumeDownloadTasks(taskId);
-      await refreshSilentProgress(client, update.peer, userId);
       await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: result.total > 0 ? "\u5DF2\u7EE7\u7EED\u4E0B\u8F7D\u961F\u5217" : "\u5F53\u524D\u6CA1\u6709\u7B49\u5F85\u4E2D\u7684\u4E0B\u8F7D\u4EFB\u52A1" }));
+      await refreshSilentProgress(client, update.peer, userId, void 0, true);
       return;
     }
     await cancelSilentTask(client, update.peer, taskId, update.msgId, userId);

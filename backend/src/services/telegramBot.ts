@@ -1076,14 +1076,14 @@ async function handleTaskQueueCallback(update: Api.UpdateBotCallbackQuery, data:
     try {
         if (action === 'pause') {
             const result = pauseDownloadTasks(taskId);
-            await refreshSilentProgress(client, update.peer, userId);
             await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: result.total > 0 ? '已暂停下载队列' : '当前没有可暂停的下载任务' }));
+            await refreshSilentProgress(client, update.peer, userId, undefined, true);
             return;
         }
         if (action === 'resume') {
             const result = resumeDownloadTasks(taskId);
-            await refreshSilentProgress(client, update.peer, userId);
             await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: result.total > 0 ? '已继续下载队列' : '当前没有等待中的下载任务' }));
+            await refreshSilentProgress(client, update.peer, userId, undefined, true);
             return;
         }
         await cancelSilentTask(client, update.peer, taskId, update.msgId, userId);

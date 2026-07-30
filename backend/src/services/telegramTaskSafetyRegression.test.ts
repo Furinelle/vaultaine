@@ -20,6 +20,7 @@ assert.match(commands, /旧版取消按钮已失效，请使用新版 \/tasks/);
 assert.match(commands, /pendingTaskCenterCancels/);
 assert.match(commands, /taskCenterCardOwners/);
 assert.match(commands, /refreshSilentProgress\(client, update\.peer, userId,/);
+assert.match(commands, /callbackAnswered = true;[\s\S]*renderTaskCenterList/);
 assert.match(jobs, /status = 'cooling'/);
 assert.match(jobs, /restoreUnfinishedClaimedRefs\(jobId, refs/);
 assert.match(jobs, /paused_at IS NULL AND status NOT IN \('cancelled', 'paused', 'cooling'\)/);
