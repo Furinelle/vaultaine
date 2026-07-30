@@ -751,35 +751,51 @@ function isPrivateAddress(ip) {
     return true;
   }
 }
-function publicOnlyLookup(hostname, options, callback) {
-  const normalizedOptions = typeof options === "number" ? { family: options } : options || {};
-  void dns.lookup(hostname, {
-    all: true,
-    family: normalizedOptions.family || 0,
-    verbatim: true
-  }).then((addresses) => {
-    if (addresses.length === 0 || addresses.some((item) => isPrivateAddress(item.address))) {
-      const error = Object.assign(
-        new Error("\u4E0D\u5141\u8BB8\u8FDE\u63A5\u5185\u7F51\u3001\u56DE\u73AF\u6216\u4FDD\u7559\u5730\u5740"),
-        { code: "ERR_PRIVATE_NETWORK_ADDRESS" }
-      );
-      callback(error);
-      return;
-    }
-    if (normalizedOptions.all) {
-      callback(null, addresses);
-      return;
-    }
-    callback(null, addresses[0].address, addresses[0].family);
-  }).catch((error) => callback(error));
+function normalizedHostname(hostname) {
+  return hostname.trim().replace(/^\[|\]$/g, "").toLowerCase();
+}
+function privateStorageEndpointHostnames() {
+  return new Set(
+    String(process.env.STORAGE_PRIVATE_HOST_ALLOWLIST || "").split(",").map(normalizedHostname).filter(Boolean)
+  );
+}
+function isAllowedPrivateHostname(hostname, allowlist) {
+  return allowlist.has(normalizedHostname(hostname));
+}
+function guardedLookup(allowlist) {
+  return function lookup2(hostname, options, callback) {
+    const normalizedOptions = typeof options === "number" ? { family: options } : options || {};
+    void dns.lookup(hostname, {
+      all: true,
+      family: normalizedOptions.family || 0,
+      verbatim: true
+    }).then((addresses) => {
+      if (addresses.length === 0 || !isAllowedPrivateHostname(hostname, allowlist) && addresses.some((item) => isPrivateAddress(item.address))) {
+        const error = Object.assign(
+          new Error("\u4E0D\u5141\u8BB8\u8FDE\u63A5\u5185\u7F51\u3001\u56DE\u73AF\u6216\u4FDD\u7559\u5730\u5740"),
+          { code: "ERR_PRIVATE_NETWORK_ADDRESS" }
+        );
+        callback(error);
+        return;
+      }
+      if (normalizedOptions.all) {
+        callback(null, addresses);
+        return;
+      }
+      callback(null, addresses[0].address, addresses[0].family);
+    }).catch((error) => callback(error));
+  };
 }
 function connectionHostname(options) {
   return String(options.hostname || options.host || "").replace(/^\[|\]$/g, "");
 }
-function createPublicOnlyHttpAgents() {
+function createPublicOnlyHttpAgents(options = {}) {
+  const allowlist = new Set(
+    [...options.allowedPrivateHostnames || []].map(normalizedHostname).filter(Boolean)
+  );
   return {
-    httpAgent: new PublicOnlyHttpAgent(),
-    httpsAgent: new PublicOnlyHttpsAgent()
+    httpAgent: new PublicOnlyHttpAgent(allowlist),
+    httpsAgent: new PublicOnlyHttpsAgent(allowlist)
   };
 }
 async function assertPublicHttpUrl(rawUrl) {
@@ -811,7 +827,17 @@ async function assertPublicHttpsUrl(rawUrl) {
   return parsed;
 }
 async function assertPublicStorageEndpoint(rawUrl) {
-  const parsed = await assertPublicHttpUrl(rawUrl);
+  let candidate;
+  try {
+    candidate = new URL(rawUrl);
+  } catch {
+    throw new Error("\u94FE\u63A5\u683C\u5F0F\u65E0\u6548");
+  }
+  const privateAllowlist = privateStorageEndpointHostnames();
+  const parsed = isAllowedPrivateHostname(candidate.hostname, privateAllowlist) ? candidate : await assertPublicHttpUrl(rawUrl);
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("\u4EC5\u5141\u8BB8 http/https \u94FE\u63A5");
+  }
   if (parsed.protocol !== "https:" && process.env.ALLOW_INSECURE_STORAGE_ENDPOINTS !== "true") {
     throw new Error("\u5B58\u50A8\u7AEF\u70B9\u4EC5\u5141\u8BB8 https\uFF1B\u5982\u786E\u9700 http\uFF0C\u8BF7\u663E\u5F0F\u8BBE\u7F6E ALLOW_INSECURE_STORAGE_ENDPOINTS=true");
   }
@@ -822,12 +848,14 @@ var init_networkSecurity = __esm({
   "src/utils/networkSecurity.ts"() {
     "use strict";
     PublicOnlyHttpAgent = class extends http.Agent {
-      constructor() {
-        super({ lookup: publicOnlyLookup });
+      constructor(privateHostnameAllowlist) {
+        super({ lookup: guardedLookup(privateHostnameAllowlist) });
+        this.privateHostnameAllowlist = privateHostnameAllowlist;
       }
+      privateHostnameAllowlist;
       createConnection(options, callback) {
         const hostname = connectionHostname(options);
-        if (net.isIP(hostname) && isPrivateAddress(hostname)) {
+        if (net.isIP(hostname) && isPrivateAddress(hostname) && !isAllowedPrivateHostname(hostname, this.privateHostnameAllowlist)) {
           const error = new Error("\u4E0D\u5141\u8BB8\u8FDE\u63A5\u5185\u7F51\u3001\u56DE\u73AF\u6216\u4FDD\u7559\u5730\u5740");
           process.nextTick(() => callback?.(error, null));
           return void 0;
@@ -836,12 +864,14 @@ var init_networkSecurity = __esm({
       }
     };
     PublicOnlyHttpsAgent = class extends https.Agent {
-      constructor() {
-        super({ lookup: publicOnlyLookup });
+      constructor(privateHostnameAllowlist) {
+        super({ lookup: guardedLookup(privateHostnameAllowlist) });
+        this.privateHostnameAllowlist = privateHostnameAllowlist;
       }
+      privateHostnameAllowlist;
       createConnection(options, callback) {
         const hostname = connectionHostname(options);
-        if (net.isIP(hostname) && isPrivateAddress(hostname)) {
+        if (net.isIP(hostname) && isPrivateAddress(hostname) && !isAllowedPrivateHostname(hostname, this.privateHostnameAllowlist)) {
           const error = new Error("\u4E0D\u5141\u8BB8\u8FDE\u63A5\u5185\u7F51\u3001\u56DE\u73AF\u6216\u4FDD\u7559\u5730\u5740");
           process.nextTick(() => callback?.(error, null));
           return void 0;
@@ -876,6 +906,9 @@ import { getSignedUrl as getS3SignedUrl } from "@aws-sdk/s3-request-presigner";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { createClient } from "webdav";
 import { google } from "googleapis";
+function storagePrivateHostnameAllowlist() {
+  return String(process.env.STORAGE_PRIVATE_HOST_ALLOWLIST || "").split(",").map((value) => value.trim()).filter(Boolean);
+}
 function isStorageQuotaCooldownError(error) {
   return error instanceof StorageQuotaCooldownError || error?.name === "StorageQuotaCooldownError";
 }
@@ -1083,7 +1116,9 @@ var init_storage = __esm({
         this.secretAccessKey = secretAccessKey;
         this.bucket = bucket;
         this.forcePathStyle = forcePathStyle;
-        const { httpAgent, httpsAgent } = createPublicOnlyHttpAgents();
+        const { httpAgent, httpsAgent } = createPublicOnlyHttpAgents({
+          allowedPrivateHostnames: storagePrivateHostnameAllowlist()
+        });
         this.client = new S3Client({
           endpoint,
           region,
@@ -1209,7 +1244,9 @@ var init_storage = __esm({
         this.password = password;
         this.requestTimeoutMs = requestTimeoutMs;
         this.uploadTimeoutMs = uploadTimeoutMs;
-        const { httpAgent, httpsAgent } = createPublicOnlyHttpAgents();
+        const { httpAgent, httpsAgent } = createPublicOnlyHttpAgents({
+          allowedPrivateHostnames: storagePrivateHostnameAllowlist()
+        });
         this.client = createClient(url, {
           username,
           password,

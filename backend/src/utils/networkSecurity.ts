@@ -23,18 +23,42 @@ type LookupCallback = (
     family?: number,
 ) => void;
 
-function publicOnlyLookup(
-    hostname: string,
-    options: number | { family?: number; all?: boolean },
-    callback: LookupCallback,
-): void {
+function normalizedHostname(hostname: string): string {
+    return hostname.trim().replace(/^\[|\]$/g, '').toLowerCase();
+}
+
+function privateStorageEndpointHostnames(): Set<string> {
+    return new Set(
+        String(process.env.STORAGE_PRIVATE_HOST_ALLOWLIST || '')
+            .split(',')
+            .map(normalizedHostname)
+            .filter(Boolean),
+    );
+}
+
+function isAllowedPrivateHostname(hostname: string, allowlist: ReadonlySet<string>): boolean {
+    return allowlist.has(normalizedHostname(hostname));
+}
+
+function guardedLookup(allowlist: ReadonlySet<string>) {
+    return function lookup(
+        hostname: string,
+        options: number | { family?: number; all?: boolean },
+        callback: LookupCallback,
+    ): void {
     const normalizedOptions = typeof options === 'number' ? { family: options } : options || {};
     void dns.lookup(hostname, {
         all: true,
         family: normalizedOptions.family || 0,
         verbatim: true,
     }).then(addresses => {
-        if (addresses.length === 0 || addresses.some(item => isPrivateAddress(item.address))) {
+        if (
+            addresses.length === 0
+            || (
+                !isAllowedPrivateHostname(hostname, allowlist)
+                && addresses.some(item => isPrivateAddress(item.address))
+            )
+        ) {
             const error = Object.assign(
                 new Error('不允许连接内网、回环或保留地址'),
                 { code: 'ERR_PRIVATE_NETWORK_ADDRESS' },
@@ -48,6 +72,7 @@ function publicOnlyLookup(
         }
         callback(null, addresses[0].address, addresses[0].family);
     }).catch(error => callback(error as NodeJS.ErrnoException));
+    };
 }
 
 function connectionHostname(options: http.ClientRequestArgs): string {
@@ -55,8 +80,8 @@ function connectionHostname(options: http.ClientRequestArgs): string {
 }
 
 class PublicOnlyHttpAgent extends http.Agent {
-    constructor() {
-        super({ lookup: publicOnlyLookup as any });
+    constructor(private readonly privateHostnameAllowlist: ReadonlySet<string>) {
+        super({ lookup: guardedLookup(privateHostnameAllowlist) as any });
     }
 
     override createConnection(
@@ -64,7 +89,11 @@ class PublicOnlyHttpAgent extends http.Agent {
         callback?: (error: Error | null, stream: Duplex) => void,
     ): Duplex | null | undefined {
         const hostname = connectionHostname(options);
-        if (net.isIP(hostname) && isPrivateAddress(hostname)) {
+        if (
+            net.isIP(hostname)
+            && isPrivateAddress(hostname)
+            && !isAllowedPrivateHostname(hostname, this.privateHostnameAllowlist)
+        ) {
             const error = new Error('不允许连接内网、回环或保留地址');
             process.nextTick(() => callback?.(error, null as never));
             return undefined;
@@ -74,8 +103,8 @@ class PublicOnlyHttpAgent extends http.Agent {
 }
 
 class PublicOnlyHttpsAgent extends https.Agent {
-    constructor() {
-        super({ lookup: publicOnlyLookup as any });
+    constructor(private readonly privateHostnameAllowlist: ReadonlySet<string>) {
+        super({ lookup: guardedLookup(privateHostnameAllowlist) as any });
     }
 
     override createConnection(
@@ -83,7 +112,11 @@ class PublicOnlyHttpsAgent extends https.Agent {
         callback?: (error: Error | null, stream: Duplex) => void,
     ): Duplex | null | undefined {
         const hostname = connectionHostname(options);
-        if (net.isIP(hostname) && isPrivateAddress(hostname)) {
+        if (
+            net.isIP(hostname)
+            && isPrivateAddress(hostname)
+            && !isAllowedPrivateHostname(hostname, this.privateHostnameAllowlist)
+        ) {
             const error = new Error('不允许连接内网、回环或保留地址');
             process.nextTick(() => callback?.(error, null as never));
             return undefined;
@@ -92,13 +125,20 @@ class PublicOnlyHttpsAgent extends https.Agent {
     }
 }
 
-export function createPublicOnlyHttpAgents(): {
+export function createPublicOnlyHttpAgents(options: {
+    allowedPrivateHostnames?: Iterable<string>;
+} = {}): {
     httpAgent: http.Agent;
     httpsAgent: https.Agent;
 } {
+    const allowlist = new Set(
+        [...(options.allowedPrivateHostnames || [])]
+            .map(normalizedHostname)
+            .filter(Boolean),
+    );
     return {
-        httpAgent: new PublicOnlyHttpAgent(),
-        httpsAgent: new PublicOnlyHttpsAgent(),
+        httpAgent: new PublicOnlyHttpAgent(allowlist),
+        httpsAgent: new PublicOnlyHttpsAgent(allowlist),
     };
 }
 
@@ -133,7 +173,19 @@ export async function assertPublicHttpsUrl(rawUrl: string): Promise<URL> {
 }
 
 export async function assertPublicStorageEndpoint(rawUrl: string): Promise<URL> {
-    const parsed = await assertPublicHttpUrl(rawUrl);
+    let candidate: URL;
+    try {
+        candidate = new URL(rawUrl);
+    } catch {
+        throw new Error('链接格式无效');
+    }
+    const privateAllowlist = privateStorageEndpointHostnames();
+    const parsed = isAllowedPrivateHostname(candidate.hostname, privateAllowlist)
+        ? candidate
+        : await assertPublicHttpUrl(rawUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+        throw new Error('仅允许 http/https 链接');
+    }
     if (parsed.protocol !== 'https:' && process.env.ALLOW_INSECURE_STORAGE_ENDPOINTS !== 'true') {
         throw new Error('存储端点仅允许 https；如确需 http，请显式设置 ALLOW_INSECURE_STORAGE_ENDPOINTS=true');
     }

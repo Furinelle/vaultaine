@@ -26,6 +26,13 @@ import { switchStorageAccountWithClient, switchStorageToLocalWithClient } from '
 import { validateConfiguredStorageTarget } from './storageTargetReadiness.js';
 import { createPublicOnlyHttpAgents } from '../utils/networkSecurity.js';
 
+function storagePrivateHostnameAllowlist(): string[] {
+    return String(process.env.STORAGE_PRIVATE_HOST_ALLOWLIST || '')
+        .split(',')
+        .map(value => value.trim())
+        .filter(Boolean);
+}
+
 export class StorageQuotaCooldownError extends Error {
     provider: string;
     reason: string;
@@ -329,7 +336,9 @@ export class S3StorageProvider implements IStorageProvider {
         private bucket: string,
         private forcePathStyle: boolean = false
     ) {
-        const { httpAgent, httpsAgent } = createPublicOnlyHttpAgents();
+        const { httpAgent, httpsAgent } = createPublicOnlyHttpAgents({
+            allowedPrivateHostnames: storagePrivateHostnameAllowlist(),
+        });
         this.client = new S3Client({
             endpoint: endpoint,
             region: region,
@@ -466,7 +475,9 @@ export class WebDAVStorageProvider implements IStorageProvider {
             return Number.isFinite(configured) && configured > 0 ? Math.max(60_000, configured) : 6 * 60 * 60 * 1000;
         })(),
     ) {
-        const { httpAgent, httpsAgent } = createPublicOnlyHttpAgents();
+        const { httpAgent, httpsAgent } = createPublicOnlyHttpAgents({
+            allowedPrivateHostnames: storagePrivateHostnameAllowlist(),
+        });
         this.client = createClient(url, {
             username: username,
             password: password,
